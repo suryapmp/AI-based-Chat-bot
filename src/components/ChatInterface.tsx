@@ -137,7 +137,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          "model": "google/gemini-flash-1.5",
+          "model": "qwen/qwen3.6-plus:free",
           "messages": [
             { "role": "system", "content": SYSTEM_PROMPT },
             ...contents.map(c => ({
