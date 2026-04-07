@@ -137,7 +137,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          "model": "google/gemini-pro-1.5",
+          "model": "google/gemini-flash-1.5",
           "messages": [
             { "role": "system", "content": SYSTEM_PROMPT },
             ...contents.map(c => ({
@@ -149,7 +149,10 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       });
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error?.message || "OpenRouter Error");
+      if (!response.ok) {
+        console.error("OpenRouter Error Response:", data);
+        throw new Error(data.error?.message || `OpenRouter Error: ${response.status}`);
+      }
       return data.choices[0].message.content;
     };
 
@@ -213,10 +216,12 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
             ));
           } catch (fallbackError: any) {
             console.error("OpenRouter fallback also failed:", fallbackError);
-            throw new Error(`Both models failed. Gemini: ${geminiError.message}. OpenRouter: ${fallbackError.message}`);
+            throw new Error(`Fallback failed. Gemini Quota Exceeded. OpenRouter: ${fallbackError.message}`);
           }
         } else {
-          console.warn("OpenRouter API Key missing or invalid, cannot fallback.");
+          if (geminiError?.message?.includes('429') || JSON.stringify(geminiError).includes('429')) {
+            throw new Error("Gemini API Quota Exceeded. Please wait a moment or upgrade your plan.");
+          }
           throw geminiError;
         }
       }
@@ -224,10 +229,11 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       console.error("Error in chat flow:", error);
       let errorMessage = "An error occurred while connecting to VTU Intelligence Core. Please try again later.";
       
-      if (error?.message?.includes('429')) {
-        errorMessage = "VTU Intelligence Core is currently receiving too many requests. Please wait a moment and try again.";
+      const errorStr = JSON.stringify(error);
+      if (error?.message?.includes('429') || errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
+        errorMessage = "VTU Intelligence Core is currently at maximum capacity (Quota Exceeded). Please try again in 1-2 minutes.";
       } else if (error?.message?.includes('API Key missing') || error?.message?.includes('GEMINI_API_KEY is missing')) {
-        errorMessage = "Configuration Error: API Keys are missing in the deployment environment. Please set GEMINI_API_KEY and OPENROUTER_API_KEY.";
+        errorMessage = "Configuration Error: API Keys are missing. Please set GEMINI_API_KEY.";
       } else if (error?.message) {
         errorMessage = `Connection Error: ${error.message}`;
       }
