@@ -46,6 +46,7 @@ interface Message {
     url: string;
   };
   groundingMetadata?: any;
+  reasoning_details?: string;
   timestamp: Date;
 }
 
@@ -124,7 +125,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       timestamp: new Date(),
     };
     
-    const callOpenRouter = async (contents: any[]): Promise<string> => {
+    const callOpenRouter = async (contents: any[]): Promise<{ content: string; reasoning?: string }> => {
       const apiKey = process.env.OPENROUTER_API_KEY;
       if (!apiKey) throw new Error("OpenRouter API Key missing");
 
@@ -142,9 +143,11 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
             { "role": "system", "content": SYSTEM_PROMPT },
             ...contents.map(c => ({
               role: c.role === 'model' ? 'assistant' : c.role,
-              content: c.parts[0].text
+              content: c.parts[0].text,
+              reasoning_details: c.reasoning_details
             }))
-          ]
+          ],
+          "reasoning": { "enabled": true }
         })
       });
 
@@ -153,7 +156,12 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         console.error("OpenRouter Error Response:", data);
         throw new Error(data.error?.message || `OpenRouter Error: ${response.status}`);
       }
-      return data.choices[0].message.content;
+      
+      const message = data.choices[0].message;
+      return {
+        content: message.content,
+        reasoning: message.reasoning_details
+      };
     };
 
     try {
@@ -161,7 +169,8 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       messages.slice(-10).forEach(msg => {
         contents.push({
           role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.content }]
+          parts: [{ text: msg.content }],
+          reasoning_details: msg.reasoning_details
         });
       });
 
@@ -210,9 +219,13 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         
         if (openRouterKey && openRouterKey !== "undefined" && openRouterKey.length > 5) {
           try {
-            const fallbackText = await callOpenRouter(contents);
+            const fallbackResponse = await callOpenRouter(contents);
             setMessages(prev => prev.map(m => 
-              m.id === botMessageId ? { ...m, content: fallbackText } : m
+              m.id === botMessageId ? { 
+                ...m, 
+                content: fallbackResponse.content, 
+                reasoning_details: fallbackResponse.reasoning 
+              } : m
             ));
           } catch (fallbackError: any) {
             console.error("OpenRouter fallback also failed:", fallbackError);
@@ -384,6 +397,17 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                   )}
 
                   <div className="markdown-container prose prose-slate prose-sm sm:prose-base max-w-none prose-blue leading-relaxed">
+                    {msg.reasoning_details && (
+                      <div className="mb-4 sm:mb-6 p-3 sm:p-5 bg-slate-50 rounded-xl sm:rounded-2xl border border-slate-200">
+                        <div className="flex items-center gap-2 mb-2">
+                          <BookOpen size={14} className="text-slate-400" />
+                          <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Model Reasoning</p>
+                        </div>
+                        <div className="text-xs sm:text-sm text-slate-500 italic leading-relaxed">
+                          {msg.reasoning_details}
+                        </div>
+                      </div>
+                    )}
                     <ReactMarkdown
                       components={{
                         code({ node, inline, className, children, ...props }: any) {
