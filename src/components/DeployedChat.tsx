@@ -57,12 +57,12 @@ export default function DeployedChat() {
   const handleSend = async () => {
     if (!input.trim() && !selectedFile) return;
 
-    // --- UPDATED KEY RETRIEVAL LOGIC ---
-    // This checks all common React/Next/Vite prefixes
+    // --- MODIFIED KEY RETRIEVAL LOGIC ---
+    // This looks for Vite (import.meta.env) AND Next.js (process.env)
     const OPENROUTER_API_KEY = 
-      process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || 
-      process.env.VITE_OPENROUTER_API_KEY || 
-      process.env.OPENROUTER_API_KEY;
+      (import.meta as any).env?.VITE_OPENROUTER_API_KEY || 
+      (process.env as any).NEXT_PUBLIC_OPENROUTER_API_KEY || 
+      (process.env as any).VITE_OPENROUTER_API_KEY;
 
     const userMessage: Message = {
       id: Math.random().toString(36).substring(7),
@@ -82,8 +82,9 @@ export default function DeployedChat() {
     setMessages(prev => [...prev, { id: botMessageId, role: 'bot', content: '', timestamp: new Date() }]);
 
     try {
-      if (!OPENROUTER_API_KEY) {
-        throw new Error("KEY_MISSING: Ensure 'NEXT_PUBLIC_OPENROUTER_API_KEY' is set in Netlify and 'Clear Cache and Deploy' was used.");
+      // 1. Check if the key is actually present
+      if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === "undefined") {
+        throw new Error("KEY_MISSING: Environment variable not found. Please ensure VITE_OPENROUTER_API_KEY is set in Netlify.");
       }
 
       const history = messages.slice(-6).map(msg => ({
@@ -124,17 +125,22 @@ export default function DeployedChat() {
       let data = await response.json();
 
       if (!response.ok) {
+        console.warn("Primary failed, trying fallback...");
         response = await makeRequest("google/gemma-2-9b-it:free");
         data = await response.json();
       }
 
-      if (!response.ok) throw new Error(data.error?.message || "Auth Error");
+      if (!response.ok) {
+        // This will catch the 401 and explain why
+        throw new Error(data.error?.message || `Server returned ${response.status}`);
+      }
 
       setMessages(prev => prev.map(m => 
         m.id === botMessageId ? { ...m, content: data.choices[0].message.content } : m
       ));
 
     } catch (error: any) {
+      console.error("Chat Error:", error);
       setMessages(prev => prev.map(m => 
         m.id === botMessageId ? { ...m, content: `⚠️ **System Error:** ${error.message}` } : m
       ));
@@ -147,7 +153,6 @@ export default function DeployedChat() {
     <div className="flex flex-col h-screen w-full bg-white overflow-hidden relative font-sans">
       {viewingPdf && <PDFModal fileUrl={viewingPdf} onClose={() => setViewingPdf(null)} />}
 
-      {/* Header */}
       <div className="bg-blue-900 text-white px-6 py-4 flex items-center justify-between shrink-0 shadow-lg">
         <div className="flex items-center gap-4">
           <div className="bg-white/10 p-2 rounded-xl"><GraduationCap size={24} /></div>
@@ -162,7 +167,6 @@ export default function DeployedChat() {
         </div>
       </div>
 
-      {/* Chat Area */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-6 bg-[#FDFEFF]">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center space-y-4 py-12">
@@ -221,7 +225,6 @@ export default function DeployedChat() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
       <div className="p-4 sm:p-6 bg-white border-t border-slate-100">
         {selectedFile && (
           <div className="mb-4 relative inline-block">
