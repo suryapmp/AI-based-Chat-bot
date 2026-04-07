@@ -57,10 +57,12 @@ export default function DeployedChat() {
   const handleSend = async () => {
     if (!input.trim() && !selectedFile) return;
 
-    // 1. SECURE KEY HANDLING
-    // Prioritize Netlify Environment Variable. 
-    // Remove the hardcoded string once you've confirmed Netlify is working.
-    const OPENROUTER_API_KEY = process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY;
+    // --- UPDATED KEY RETRIEVAL LOGIC ---
+    // This checks all common React/Next/Vite prefixes
+    const OPENROUTER_API_KEY = 
+      process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || 
+      process.env.VITE_OPENROUTER_API_KEY || 
+      process.env.OPENROUTER_API_KEY;
 
     const userMessage: Message = {
       id: Math.random().toString(36).substring(7),
@@ -81,7 +83,7 @@ export default function DeployedChat() {
 
     try {
       if (!OPENROUTER_API_KEY) {
-        throw new Error("API configuration missing. Please set OPENROUTER_API_KEY in Netlify.");
+        throw new Error("KEY_MISSING: Ensure 'NEXT_PUBLIC_OPENROUTER_API_KEY' is set in Netlify and 'Clear Cache and Deploy' was used.");
       }
 
       const history = messages.slice(-6).map(msg => ({
@@ -117,12 +119,11 @@ export default function DeployedChat() {
         });
       };
 
-      // Tiered Fallback Logic
+      // TIERED FALLBACK
       let response = await makeRequest("google/gemma-3-27b-it:free");
       let data = await response.json();
 
       if (!response.ok) {
-        console.warn("Primary failed, trying fallback...");
         response = await makeRequest("google/gemma-2-9b-it:free");
         data = await response.json();
       }
@@ -161,7 +162,7 @@ export default function DeployedChat() {
         </div>
       </div>
 
-      {/* Chat Space */}
+      {/* Chat Area */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-6 bg-[#FDFEFF]">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center space-y-4 py-12">
@@ -220,7 +221,7 @@ export default function DeployedChat() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
+      {/* Input Area */}
       <div className="p-4 sm:p-6 bg-white border-t border-slate-100">
         {selectedFile && (
           <div className="mb-4 relative inline-block">
