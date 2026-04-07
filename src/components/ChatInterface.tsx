@@ -180,6 +180,9 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       setMessages(prev => [...prev, initialBotMessage]);
 
       try {
+        if (!process.env.GEMINI_API_KEY) {
+          throw new Error("GEMINI_API_KEY is missing. Please check your environment variables.");
+        }
         const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
         const result = await ai.models.generateContentStream({
           model: "gemini-3-flash-preview",
@@ -200,21 +203,35 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         }
       } catch (geminiError: any) {
         console.error("Gemini failed, trying OpenRouter fallback...", geminiError);
-        if (process.env.OPENROUTER_API_KEY) {
-          const fallbackText = await callOpenRouter(contents);
-          setMessages(prev => prev.map(m => 
-            m.id === botMessageId ? { ...m, content: fallbackText } : m
-          ));
+        const openRouterKey = process.env.OPENROUTER_API_KEY;
+        
+        if (openRouterKey && openRouterKey !== "undefined" && openRouterKey.length > 5) {
+          try {
+            const fallbackText = await callOpenRouter(contents);
+            setMessages(prev => prev.map(m => 
+              m.id === botMessageId ? { ...m, content: fallbackText } : m
+            ));
+          } catch (fallbackError: any) {
+            console.error("OpenRouter fallback also failed:", fallbackError);
+            throw new Error(`Both models failed. Gemini: ${geminiError.message}. OpenRouter: ${fallbackError.message}`);
+          }
         } else {
+          console.warn("OpenRouter API Key missing or invalid, cannot fallback.");
           throw geminiError;
         }
       }
     } catch (error: any) {
       console.error("Error in chat flow:", error);
       let errorMessage = "An error occurred while connecting to VTU Intelligence Core. Please try again later.";
+      
       if (error?.message?.includes('429')) {
         errorMessage = "VTU Intelligence Core is currently receiving too many requests. Please wait a moment and try again.";
+      } else if (error?.message?.includes('API Key missing') || error?.message?.includes('GEMINI_API_KEY is missing')) {
+        errorMessage = "Configuration Error: API Keys are missing in the deployment environment. Please set GEMINI_API_KEY and OPENROUTER_API_KEY.";
+      } else if (error?.message) {
+        errorMessage = `Connection Error: ${error.message}`;
       }
+
       setMessages(prev => prev.map(m => 
         m.id === botMessageId ? { ...m, content: errorMessage } : m
       ));
