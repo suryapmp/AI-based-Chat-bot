@@ -1,0 +1,8 @@
+{
+  "name": "VTU Intelligence Core",
+  "description": "Official AI administrative and academic concierge for Visvesvaraya Technological University (VTU). Providing accurate information on syllabus, exam regulations, and university circulars.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
