@@ -115,10 +115,45 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
     setInput('');
     setSelectedFile(null);
     setIsLoading(true);
+    
+    const botMessageId = Math.random().toString(36).substring(7);
+    const initialBotMessage: Message = {
+      id: botMessageId,
+      role: 'bot',
+      content: '',
+      timestamp: new Date(),
+    };
+    
+    const callOpenRouter = async (contents: any[]): Promise<string> => {
+      const apiKey = process.env.OPENROUTER_API_KEY;
+      if (!apiKey) throw new Error("OpenRouter API Key missing");
+
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "HTTP-Referer": window.location.origin,
+          "X-Title": "VTU Intelligence Core",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          "model": "google/gemini-pro-1.5",
+          "messages": [
+            { "role": "system", "content": SYSTEM_PROMPT },
+            ...contents.map(c => ({
+              role: c.role === 'model' ? 'assistant' : c.role,
+              content: c.parts[0].text
+            }))
+          ]
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error?.message || "OpenRouter Error");
+      return data.choices[0].message.content;
+    };
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      
       const contents: any[] = [];
       messages.slice(-10).forEach(msg => {
         contents.push({
@@ -139,35 +174,50 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       }
 
       currentParts.push({ text: userMessage.content || "Analyze the attached content and provide VTU related information." });
-      
       contents.push({ role: 'user', parts: currentParts });
 
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: contents,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
-          tools: [{ googleSearch: {} }],
-        },
-      });
+      // Add empty bot message placeholder
+      setMessages(prev => [...prev, initialBotMessage]);
 
-      const botMessage: Message = {
-        id: Math.random().toString(36).substring(7),
-        role: 'bot',
-        content: response.text || "I'm sorry, I couldn't generate a response.",
-        groundingMetadata: response.candidates?.[0]?.groundingMetadata,
-        timestamp: new Date(),
-      };
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        const result = await ai.models.generateContentStream({
+          model: "gemini-3-flash-preview",
+          contents: contents,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            tools: [{ googleSearch: {} }],
+          },
+        });
 
-      setMessages(prev => [...prev, botMessage]);
-    } catch (error) {
-      console.error("Error calling Gemini:", error);
-      setMessages(prev => [...prev, {
-        id: 'error',
-        role: 'bot',
-        content: "An error occurred while connecting to VTU Intelligence Core. Please try again later.",
-        timestamp: new Date(),
-      }]);
+        let fullText = "";
+        for await (const chunk of result) {
+          const chunkText = chunk.text || "";
+          fullText += chunkText;
+          setMessages(prev => prev.map(m => 
+            m.id === botMessageId ? { ...m, content: fullText, groundingMetadata: chunk.candidates?.[0]?.groundingMetadata || m.groundingMetadata } : m
+          ));
+        }
+      } catch (geminiError: any) {
+        console.error("Gemini failed, trying OpenRouter fallback...", geminiError);
+        if (process.env.OPENROUTER_API_KEY) {
+          const fallbackText = await callOpenRouter(contents);
+          setMessages(prev => prev.map(m => 
+            m.id === botMessageId ? { ...m, content: fallbackText } : m
+          ));
+        } else {
+          throw geminiError;
+        }
+      }
+    } catch (error: any) {
+      console.error("Error in chat flow:", error);
+      let errorMessage = "An error occurred while connecting to VTU Intelligence Core. Please try again later.";
+      if (error?.message?.includes('429')) {
+        errorMessage = "VTU Intelligence Core is currently receiving too many requests. Please wait a moment and try again.";
+      }
+      setMessages(prev => prev.map(m => 
+        m.id === botMessageId ? { ...m, content: errorMessage } : m
+      ));
     } finally {
       setIsLoading(false);
     }
@@ -192,14 +242,16 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
           <QuickLink icon={<FileText size={14} />} label="Exam Manual" href="https://vtu.ac.in/en/examination-manual/" />
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest">Live Grounding Active</span>
+          <div className="flex -space-x-1">
+            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse z-10" />
+            <div className="w-2 h-2 bg-purple-500 rounded-full animate-pulse" />
+          </div>
+          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest">Multi-Model Active</span>
         </div>
       </div>
 
-      {/* Chat Messages */}
       <div className={cn(
-        "flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 bg-[#FCFDFF]",
+        "flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 bg-[#FDFEFF]",
         isWidget ? "p-4 space-y-4" : "p-4 sm:p-8 space-y-6 sm:space-y-10"
       )}>
         {messages.length === 0 && (
@@ -211,22 +263,22 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               initial={{ scale: 0.8, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               className={cn(
-                "bg-blue-900 rounded-[32px] shadow-2xl",
-                isWidget ? "p-4" : "p-6 sm:p-10 sm:rounded-[48px]"
+                "bg-blue-600 rounded-[32px] shadow-2xl p-6",
+                isWidget ? "p-4" : "sm:p-10 sm:rounded-[48px]"
               )}
             >
               <GraduationCap className="text-white" size={isWidget ? 32 : 48} />
             </motion.div>
             <div className="space-y-2">
               <h3 className={cn(
-                "font-black text-blue-900 tracking-tight font-display",
+                "font-black text-slate-900 tracking-tight font-display",
                 isWidget ? "text-xl" : "text-3xl sm:text-5xl"
               )}>VTU Intelligence</h3>
               <p className={cn(
                 "text-slate-500 font-medium leading-relaxed mx-auto px-4",
                 isWidget ? "text-xs" : "text-sm sm:text-xl max-w-xl"
               )}>
-                Official academic concierge.
+                Official Academic Concierge
               </p>
             </div>
             <div className={cn(
@@ -263,10 +315,10 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               )}
             >
               <div className={cn(
-                "w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 shadow-lg border-2",
-                msg.role === 'user' ? "bg-blue-900 border-blue-800" : "bg-amber-500 border-amber-400"
+                "w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 shadow-sm border",
+                msg.role === 'user' ? "bg-blue-50 border-blue-100" : "bg-white border-slate-200"
               )}>
-                {msg.role === 'user' ? <User size={16} className="text-white sm:w-6 sm:h-6" /> : <Bot size={16} className="text-white sm:w-6 sm:h-6" />}
+                {msg.role === 'user' ? <User size={16} className="text-blue-600 sm:w-6 sm:h-6" /> : <Bot size={16} className="text-blue-600 sm:w-6 sm:h-6" />}
               </div>
               
               <div className={cn(
@@ -274,9 +326,9 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                 msg.role === 'user' ? "text-right" : "text-left"
               )}>
                 <div className={cn(
-                  "inline-block rounded-2xl sm:rounded-[32px] p-4 sm:p-6 shadow-sm border text-left",
+                  "inline-block rounded-2xl sm:rounded-[28px] p-4 sm:p-6 shadow-sm border text-left",
                   msg.role === 'user' 
-                    ? "bg-blue-900 text-white rounded-tr-none border-blue-800" 
+                    ? "bg-blue-600 text-white rounded-tr-none border-blue-500 font-semibold" 
                     : "bg-white text-slate-800 rounded-tl-none border-slate-100"
                 )}>
                   {msg.image && (
@@ -289,19 +341,19 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                   )}
                   
                   {msg.pdf && (
-                    <div className="mb-4 sm:mb-6 p-3 sm:p-5 bg-blue-50 rounded-xl sm:rounded-2xl border border-blue-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-6">
+                    <div className="mb-4 sm:mb-6 p-3 sm:p-5 bg-blue-50 rounded-xl sm:rounded-2xl border border-blue-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-6">
                       <div className="flex items-center gap-3 sm:gap-4 overflow-hidden">
-                        <div className="bg-red-100 p-2 sm:p-3 rounded-lg sm:rounded-xl">
+                        <div className="bg-red-50 p-2 sm:p-3 rounded-lg sm:rounded-xl">
                           <FileText className="text-red-600 w-5 h-5 sm:w-7 sm:h-7" />
                         </div>
                         <div className="overflow-hidden">
-                          <p className="text-sm sm:text-base font-black text-blue-900 truncate">{msg.pdf.name}</p>
+                          <p className="text-sm sm:text-base font-black text-slate-900 truncate">{msg.pdf.name}</p>
                           <p className="text-[8px] sm:text-[10px] text-blue-500 font-black uppercase tracking-widest">Official VTU Document</p>
                         </div>
                       </div>
                       <button 
                         onClick={() => setViewingPdf(msg.pdf!.url)}
-                        className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-blue-900 text-white rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-black hover:bg-black transition-all shadow-xl shrink-0"
+                        className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-blue-600 text-white rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-black hover:bg-black transition-all shadow-xl shrink-0"
                       >
                         <Eye className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> VIEW
                       </button>
@@ -334,7 +386,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                               </SyntaxHighlighter>
                             </div>
                           ) : (
-                            <code className={cn("bg-slate-100 text-blue-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
+                            <code className={cn("bg-blue-50 text-blue-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
                               {children}
                             </code>
                           );
@@ -350,9 +402,9 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                         th: ({ children }) => <th className="px-3 py-2 sm:px-6 sm:py-4 text-left text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{children}</th>,
                         tr: ({ children }) => <tr className="hover:bg-slate-50 transition-colors">{children}</tr>,
                         td: ({ children }) => <td className="px-3 py-2 sm:px-6 sm:py-4 text-[10px] sm:text-sm text-slate-600 border-t border-slate-100 font-medium">{children}</td>,
-                        strong: ({ children }) => <strong className="text-blue-900 font-black">{children}</strong>,
-                        h1: ({ children }) => <h1 className="text-xl sm:text-2xl font-black text-blue-900 mb-3 sm:mb-4 tracking-tight font-display">{children}</h1>,
-                        h2: ({ children }) => <h2 className="text-lg sm:text-xl font-black text-blue-900 mb-2 sm:mb-3 tracking-tight font-display">{children}</h2>,
+                        strong: ({ children }) => <strong className="text-slate-900 font-black">{children}</strong>,
+                        h1: ({ children }) => <h1 className="text-xl sm:text-2xl font-black text-slate-900 mb-3 sm:mb-4 tracking-tight font-display">{children}</h1>,
+                        h2: ({ children }) => <h2 className="text-lg sm:text-xl font-black text-slate-900 mb-2 sm:mb-3 tracking-tight font-display">{children}</h2>,
                         p: ({ children }) => <p className="mb-3 sm:mb-4 text-slate-600 font-medium leading-relaxed text-sm sm:text-base">{children}</p>,
                       }}
                     >
@@ -395,7 +447,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                   {msg.role === 'bot' && (
                     <button 
                       onClick={() => copyToClipboard(msg.content, msg.id)}
-                      className="p-1 text-slate-300 hover:text-blue-600 transition-colors"
+                      className="p-1 text-slate-300 hover:text-indigo-600 transition-colors"
                     >
                       {copiedId === msg.id ? <Check size={10} /> : <Copy size={10} />}
                     </button>
@@ -406,23 +458,23 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
           ))}
         </AnimatePresence>
         
-        {isLoading && (
+        {isLoading && !messages[messages.length - 1]?.content && (
           <div className="flex gap-3 sm:gap-6 max-w-5xl mx-auto">
-            <div className="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-amber-500 flex items-center justify-center shrink-0 shadow-lg border-2 border-amber-400">
-              <Bot size={16} className="text-white sm:w-6 sm:h-6" />
+            <div className="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-white border border-slate-200 flex items-center justify-center shrink-0 shadow-lg">
+              <Bot size={16} className="text-blue-600 sm:w-6 sm:h-6" />
             </div>
-            <div className="bg-white rounded-2xl sm:rounded-[32px] p-4 sm:p-6 rounded-tl-none border border-slate-100 flex items-center gap-3 sm:gap-4 shadow-sm">
+            <div className="bg-white rounded-2xl sm:rounded-[28px] p-4 sm:p-6 rounded-tl-none border border-slate-100 flex items-center gap-3 sm:gap-4 shadow-sm">
               <div className="flex gap-1">
                 {[0, 1, 2].map(i => (
                   <motion.div 
                     key={i}
                     animate={{ y: [0, -6, 0] }} 
                     transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1 }}
-                    className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-blue-900 rounded-full" 
+                    className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-blue-600 rounded-full" 
                   />
                 ))}
               </div>
-              <span className="text-[10px] sm:text-xs text-blue-900 font-black uppercase tracking-widest">Processing...</span>
+              <span className="text-[10px] sm:text-xs text-blue-600 font-black uppercase tracking-widest">Thinking...</span>
             </div>
           </div>
         )}
@@ -431,7 +483,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
 
       {/* Input Area */}
       <div className={cn(
-        "bg-white border-t border-slate-100 shadow-[0_-20px_60px_rgba(0,0,0,0.03)]",
+        "bg-white border-t border-slate-100 shadow-[0_-20px_60px_rgba(0,0,0,0.02)]",
         isWidget ? "p-3" : "p-4 sm:p-8"
       )}>
         {selectedFile && (
@@ -501,7 +553,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               }}
               placeholder="Type a message..."
               className={cn(
-                "w-full rounded-2xl border border-slate-200 focus:ring-4 focus:ring-blue-50 focus:border-blue-400 focus:outline-none resize-none bg-slate-50 shadow-inner font-bold text-slate-800 placeholder:text-slate-300",
+                "w-full rounded-2xl border border-slate-200 focus:ring-4 focus:ring-blue-50 focus:border-blue-400 focus:outline-none resize-none bg-white shadow-sm font-medium text-slate-800 placeholder:text-slate-400",
                 isWidget ? "p-2 pr-10 text-xs min-h-[40px] max-h-24" : "p-3 sm:p-5 pr-12 sm:pr-20 sm:rounded-3xl sm:focus:ring-8 min-h-[48px] sm:min-h-[72px] max-h-32 sm:max-h-48 text-sm sm:text-base"
               )}
               rows={1}
@@ -510,7 +562,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               onClick={handleSend}
               disabled={isLoading || (!input.trim() && !selectedFile)}
               className={cn(
-                "absolute bg-blue-900 text-white hover:bg-black disabled:opacity-20 disabled:cursor-not-allowed transition-all shadow-2xl",
+                "absolute bg-blue-600 text-white hover:bg-black disabled:opacity-20 disabled:cursor-not-allowed transition-all shadow-2xl",
                 isWidget ? "right-1.5 bottom-1.5 p-1.5 rounded-lg" : "right-2 bottom-2 sm:right-3 sm:bottom-3 p-2 sm:p-4 rounded-xl sm:rounded-2xl"
               )}
             >
@@ -524,7 +576,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         {!isWidget && (
           <div className="mt-4 sm:mt-6 flex flex-col sm:flex-row justify-between items-center px-2 max-w-5xl mx-auto gap-3 sm:gap-0">
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
               <p className="text-[8px] sm:text-[10px] text-slate-400 font-black uppercase tracking-[0.2em] sm:tracking-[0.3em]">
                 Intelligence Core Online
               </p>

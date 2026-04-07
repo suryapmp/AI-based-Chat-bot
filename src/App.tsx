@@ -7,7 +7,7 @@ export default function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-slate-50/50 font-sans text-slate-900 selection:bg-blue-100 selection:text-blue-900 flex flex-col relative overflow-hidden">
+    <div className="min-h-screen bg-transparent font-sans text-slate-900 selection:bg-blue-100 selection:text-blue-900 flex flex-col relative overflow-hidden">
       {/* Floating Chat Widget */}
       <div className="fixed bottom-6 right-6 z-[100] flex flex-col items-end gap-4">
         <AnimatePresence>
