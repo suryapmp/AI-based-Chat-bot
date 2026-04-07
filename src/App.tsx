@@ -1,13 +1,36 @@
 import React, { useState } from 'react';
+import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import ChatInterface from './components/ChatInterface';
+import DeployedChat from './components/DeployedChat';
 import { motion, AnimatePresence } from 'motion/react';
-import { MessageCircle, X, GraduationCap } from 'lucide-react';
+import { MessageCircle, X, GraduationCap, ExternalLink } from 'lucide-react';
 
 export default function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/deploy" element={<DeployedChat />} />
+      </Routes>
+    </Router>
+  );
+}
+
+function Home() {
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   return (
     <div className="min-h-screen bg-transparent font-sans text-slate-900 selection:bg-blue-100 selection:text-blue-900 flex flex-col relative overflow-hidden">
+      {/* Link to Deployed Version */}
+      <div className="fixed top-6 right-6 z-[100]">
+        <Link 
+          to="/deploy" 
+          className="bg-blue-600 text-white px-4 py-2 rounded-xl shadow-xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-black transition-all"
+        >
+          <ExternalLink size={14} /> Deployed Version
+        </Link>
+      </div>
+
       {/* Floating Chat Widget */}
       <div className="fixed bottom-6 right-6 z-[100] flex flex-col items-end gap-4">
         <AnimatePresence>

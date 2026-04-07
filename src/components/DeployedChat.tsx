@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -12,25 +11,23 @@ import { cn } from '@/src/lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import PDFModal from './PDFModal';
 
-const SYSTEM_PROMPT = `Advanced System Prompt: VTU Intelligence Core
+const SYSTEM_PROMPT = `Advanced System Prompt: VTU Intelligence Core (Deployment Version)
 1. IDENTITY & GOAL
 You are VTU Intelligence, the official AI academic concierge for Visvesvaraya Technological University (VTU). Your goal is to provide 100% accurate information regarding syllabus, exam regulations, backlog (ATKT) systems, and university circulars.
 
 2. KNOWLEDGE RETRIEVAL & GROUNDING
 Primary Source: Use the provided PDF documents (Syllabus, CBCS Regulations, Exam Manuals).
-Live Grounding: For the latest updates, use Google Search Grounding restricted to the vtu.ac.in domain.
 Verification Rule: If a student asks about a "2026 Circular," search the live site first. Do not hallucinate dates or rules. If the information is not on the site or in your files, state: "I cannot find an official record of this. Please check the CNC department notice board."
 
 3. ADVANCED FEATURES & LOGIC
 Backlog/ATKT Logic: When a student mentions a "Backlog," strictly follow the Manual/Batch Enrollment rules. Remind them that they remain enrolled until they pass and the subject carries forward.
 Examination Focus: Prioritize accurate information for examination schedules, results, revaluation processes, and hall ticket queries.
 Multilingual Support: Default to English, but if a student asks in Kannada, respond fluently in Kannada while maintaining technical accuracy for course codes.
-Multimodal Analysis: If a student uploads a screenshot of their result or a handwritten query, use your Vision capabilities to extract the relevant data before responding.
 
 4. OUTPUT FORMATTING (University Standard)
 Structured Data: Use Markdown Tables for exam schedules or mark distributions.
 Clarity: Use Bold for Unique Course Codes and Credits.
-Tone: Professional, supportive, and grounded. Use "Faculty" instead of "Instructor."
+Tone: Professional, supportive, and grounded.
 
 5. TRANSACTIONAL CLOSURE
 At the end of every significant query resolution, you MUST include this standard closing:
@@ -45,16 +42,10 @@ interface Message {
     name: string;
     url: string;
   };
-  groundingMetadata?: any;
-  reasoning_details?: string;
   timestamp: Date;
 }
 
-interface ChatInterfaceProps {
-  isWidget?: boolean;
-}
-
-export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) {
+export default function DeployedChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -124,133 +115,83 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       content: '',
       timestamp: new Date(),
     };
-    
-    const callOpenRouter = async (contents: any[]): Promise<{ content: string; reasoning?: string }> => {
-      const apiKey = process.env.OPENROUTER_API_KEY;
-      if (!apiKey) throw new Error("OpenRouter API Key missing");
 
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "HTTP-Referer": window.location.origin,
-          "X-Title": "VTU Intelligence Core",
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          "model": "qwen/qwen3.6-plus:free",
-          "messages": [
-            { "role": "system", "content": SYSTEM_PROMPT },
-            ...contents.map(c => ({
-              role: c.role === 'model' ? 'assistant' : c.role,
-              content: c.parts[0].text,
-              reasoning_details: c.reasoning_details
-            }))
-          ],
-          "reasoning": { "enabled": true }
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        console.error("OpenRouter Error Response:", data);
-        throw new Error(data.error?.message || `OpenRouter Error: ${response.status}`);
-      }
-      
-      const message = data.choices[0].message;
-      return {
-        content: message.content,
-        reasoning: message.reasoning_details
-      };
-    };
+    setMessages(prev => [...prev, initialBotMessage]);
 
     try {
-      const contents: any[] = [];
-      messages.slice(-10).forEach(msg => {
-        contents.push({
-          role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.content }],
-          reasoning_details: msg.reasoning_details
-        });
-      });
+      // Use the environment variable if available, otherwise fallback to the provided key
+      const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "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";
+      
+      const history = messages.slice(-10).map(msg => ({
+        role: msg.role === 'bot' ? 'assistant' : 'user',
+        content: msg.content || (msg.image ? "User sent an image." : "User sent a document.")
+      }));
 
-      const currentParts: any[] = [];
+      let currentContent: any;
+      
       if (userMessage.image) {
-        const base64Data = userMessage.image.split(',')[1];
-        const mimeType = userMessage.image.split(';')[0].split(':')[1];
-        currentParts.push({ inlineData: { data: base64Data, mimeType: mimeType } });
-      }
-      
-      if (userMessage.pdf) {
-        currentParts.push({ text: `[SYSTEM: User has attached a PDF document named "${userMessage.pdf.name}". Please acknowledge this and provide information based on VTU regulations.]` });
-      }
-
-      currentParts.push({ text: userMessage.content || "Analyze the attached content and provide VTU related information." });
-      contents.push({ role: 'user', parts: currentParts });
-
-      // Add empty bot message placeholder
-      setMessages(prev => [...prev, initialBotMessage]);
-
-      try {
-        if (!process.env.GEMINI_API_KEY) {
-          throw new Error("GEMINI_API_KEY is missing. Please check your environment variables.");
+        currentContent = [
+          { type: "text", text: input || "Analyze the attached content and provide VTU related information." },
+          { type: "image_url", image_url: { url: userMessage.image } }
+        ];
+      } else {
+        currentContent = input || "Analyze the attached content.";
+        if (userMessage.pdf) {
+          currentContent += ` [SYSTEM: User has attached a PDF document named "${userMessage.pdf.name}".]`;
         }
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-        const result = await ai.models.generateContentStream({
-          model: "gemini-3-flash-preview",
-          contents: contents,
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            tools: [{ googleSearch: {} }],
+      }
+
+      const makeRequest = async (modelId: string) => {
+        return await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+            "HTTP-Referer": window.location.origin,
+            "X-Title": "VTU Intelligence Core (Deployed)",
+            "Content-Type": "application/json"
           },
+          body: JSON.stringify({
+            "model": modelId,
+            "messages": [
+              { "role": "system", "content": SYSTEM_PROMPT },
+              ...history,
+              { "role": "user", "content": currentContent }
+            ],
+            "route": "fallback"
+          })
         });
+      };
 
-        let fullText = "";
-        for await (const chunk of result) {
-          const chunkText = chunk.text || "";
-          fullText += chunkText;
-          setMessages(prev => prev.map(m => 
-            m.id === botMessageId ? { ...m, content: fullText, groundingMetadata: chunk.candidates?.[0]?.groundingMetadata || m.groundingMetadata } : m
-          ));
-        }
-      } catch (geminiError: any) {
-        console.error("Gemini failed, trying OpenRouter fallback...", geminiError);
-        const openRouterKey = process.env.OPENROUTER_API_KEY;
+      let response = await makeRequest("openai/gpt-oss-120b:free");
+      let data = await response.json();
+
+      // Multi-tier fallback system for maximum reliability
+      if (!response.ok || (data.error?.message?.includes("Provider returned error")) || (data.error?.message?.includes("No endpoints found"))) {
+        console.warn("Primary model (GPT-OSS 120B) failed, trying fallback 1 (Gemma 3)...");
+        response = await makeRequest("google/gemma-3-27b-it:free");
+        data = await response.json();
         
-        if (openRouterKey && openRouterKey !== "undefined" && openRouterKey.length > 5) {
-          try {
-            const fallbackResponse = await callOpenRouter(contents);
-            setMessages(prev => prev.map(m => 
-              m.id === botMessageId ? { 
-                ...m, 
-                content: fallbackResponse.content, 
-                reasoning_details: fallbackResponse.reasoning 
-              } : m
-            ));
-          } catch (fallbackError: any) {
-            console.error("OpenRouter fallback also failed:", fallbackError);
-            throw new Error(`Fallback failed. Gemini Quota Exceeded. OpenRouter: ${fallbackError.message}`);
-          }
-        } else {
-          if (geminiError?.message?.includes('429') || JSON.stringify(geminiError).includes('429')) {
-            throw new Error("Gemini API Quota Exceeded. Please wait a moment or upgrade your plan.");
-          }
-          throw geminiError;
+        if (!response.ok || (data.error?.message?.includes("Provider returned error")) || (data.error?.message?.includes("No endpoints found"))) {
+          console.warn("Fallback 1 failed, trying fallback 2 (Gemma 2 9B)...");
+          response = await makeRequest("google/gemma-2-9b-it:free");
+          data = await response.json();
         }
       }
-    } catch (error: any) {
-      console.error("Error in chat flow:", error);
-      let errorMessage = "An error occurred while connecting to VTU Intelligence Core. Please try again later.";
-      
-      const errorStr = JSON.stringify(error);
-      if (error?.message?.includes('429') || errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-        errorMessage = "VTU Intelligence Core is currently at maximum capacity (Quota Exceeded). Please try again in 1-2 minutes.";
-      } else if (error?.message?.includes('API Key missing') || error?.message?.includes('GEMINI_API_KEY is missing')) {
-        errorMessage = "Configuration Error: API Keys are missing. Please set GEMINI_API_KEY.";
-      } else if (error?.message) {
-        errorMessage = `Connection Error: ${error.message}`;
+
+      if (!response.ok) {
+        console.error("OpenRouter Error Data:", data);
+        const errorMsg = data.error?.message || `OpenRouter Error: ${response.status}`;
+        throw new Error(errorMsg);
       }
 
+      const botResponse = data.choices[0].message.content;
+      setMessages(prev => prev.map(m => 
+        m.id === botMessageId ? { ...m, content: botResponse } : m
+      ));
+
+    } catch (error: any) {
+      console.error("Error in deployed chat flow:", error);
+      const errorMessage = `Connection Error: ${error.message}. Please ensure your OpenRouter API key is valid.`;
       setMessages(prev => prev.map(m => 
         m.id === botMessageId ? { ...m, content: errorMessage } : m
       ));
@@ -260,81 +201,45 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
   };
 
   return (
-    <div className={cn(
-      "flex flex-col max-w-6xl mx-auto bg-white overflow-hidden relative",
-      isWidget 
-        ? "h-full w-full rounded-none border-none shadow-none" 
-        : "h-[calc(100vh-220px)] sm:h-[calc(100vh-180px)] rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-200"
-    )}>
+    <div className="flex flex-col h-screen w-full bg-white overflow-hidden relative">
       {/* PDF Modal */}
       {viewingPdf && <PDFModal fileUrl={viewingPdf} onClose={() => setViewingPdf(null)} />}
 
-      {/* Top Bar / Quick Links */}
-      <div className="bg-slate-50 border-b border-slate-200 px-4 sm:px-6 py-2 sm:py-3 flex flex-col sm:flex-row sm:items-center justify-between shrink-0 gap-2 sm:gap-0">
-        <div className="flex items-center gap-3 sm:gap-6 overflow-x-auto no-scrollbar py-1">
+      {/* Top Bar */}
+      <div className="bg-blue-900 text-white px-6 py-4 flex items-center justify-between shrink-0 shadow-lg">
+        <div className="flex items-center gap-4">
+          <div className="bg-white/10 p-2 rounded-xl">
+            <GraduationCap size={24} />
+          </div>
+          <div>
+            <h3 className="font-black text-lg tracking-tight">VTU Intelligence Core</h3>
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+              <span className="text-[10px] font-black uppercase tracking-widest text-blue-200">Deployed Version (OpenRouter)</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-4">
           <QuickLink icon={<Globe size={14} />} label="Results" href="https://results.vtu.ac.in" />
           <QuickLink icon={<BookOpen size={14} />} label="Syllabus" href="https://vtu.ac.in/en/b-e-scheme-syllabus/" />
-          <QuickLink icon={<ClipboardList size={14} />} label="Circulars" href="https://vtu.ac.in/en/category/administration-circulars/" />
-          <QuickLink icon={<FileText size={14} />} label="Exam Manual" href="https://vtu.ac.in/en/examination-manual/" />
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="flex -space-x-1">
-            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse z-10" />
-            <div className="w-2 h-2 bg-purple-500 rounded-full animate-pulse" />
-          </div>
-          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest">Multi-Model Active</span>
         </div>
       </div>
 
-      <div className={cn(
-        "flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 bg-[#FDFEFF]",
-        isWidget ? "p-4 space-y-4" : "p-4 sm:p-8 space-y-6 sm:space-y-10"
-      )}>
+      <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-6 bg-[#FDFEFF]">
         {messages.length === 0 && (
-          <div className={cn(
-            "flex flex-col items-center justify-center h-full text-center mx-auto",
-            isWidget ? "space-y-4 py-4" : "space-y-6 sm:space-y-10 max-w-3xl py-8 sm:py-12"
-          )}>
+          <div className="flex flex-col items-center justify-center h-full text-center space-y-8 max-w-3xl mx-auto py-12">
             <motion.div 
               initial={{ scale: 0.8, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              className={cn(
-                "bg-blue-600 rounded-[32px] shadow-2xl p-6",
-                isWidget ? "p-4" : "sm:p-10 sm:rounded-[48px]"
-              )}
+              className="bg-blue-600 rounded-[48px] shadow-2xl p-10"
             >
-              <GraduationCap className="text-white" size={isWidget ? 32 : 48} />
+              <GraduationCap className="text-white" size={48} />
             </motion.div>
             <div className="space-y-2">
-              <h3 className={cn(
-                "font-black text-slate-900 tracking-tight font-display",
-                isWidget ? "text-xl" : "text-3xl sm:text-5xl"
-              )}>VTU Intelligence</h3>
-              <p className={cn(
-                "text-slate-500 font-medium leading-relaxed mx-auto px-4",
-                isWidget ? "text-xs" : "text-sm sm:text-xl max-w-xl"
-              )}>
-                Official Academic Concierge
+              <h3 className="font-black text-slate-900 text-3xl sm:text-5xl tracking-tight font-display">Welcome Student</h3>
+              <p className="text-slate-500 font-medium text-sm sm:text-xl max-w-xl mx-auto">
+                This is the dedicated deployment version of VTU Intelligence Core.
               </p>
-            </div>
-            <div className={cn(
-              "grid w-full px-4",
-              isWidget ? "grid-cols-1 gap-2" : "grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4"
-            )}>
-              <SuggestionCard 
-                icon={<Search size={isWidget ? 14 : 18} />} 
-                title="Exams" 
-                desc="Latest results" 
-                onClick={() => setInput("What are the latest revaluation circulars?")}
-                isWidget={isWidget}
-              />
-              <SuggestionCard 
-                icon={<Code size={isWidget ? 14 : 18} />} 
-                title="Scheme" 
-                desc="Course codes" 
-                onClick={() => setInput("Show me the credit distribution for CSE.")}
-                isWidget={isWidget}
-              />
             </div>
           </div>
         )}
@@ -397,17 +302,6 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                   )}
 
                   <div className="markdown-container prose prose-slate prose-sm sm:prose-base max-w-none prose-blue leading-relaxed">
-                    {msg.reasoning_details && (
-                      <div className="mb-4 sm:mb-6 p-3 sm:p-5 bg-slate-50 rounded-xl sm:rounded-2xl border border-slate-200">
-                        <div className="flex items-center gap-2 mb-2">
-                          <BookOpen size={14} className="text-slate-400" />
-                          <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Model Reasoning</p>
-                        </div>
-                        <div className="text-xs sm:text-sm text-slate-500 italic leading-relaxed">
-                          {msg.reasoning_details}
-                        </div>
-                      </div>
-                    )}
                     <ReactMarkdown
                       components={{
                         code({ node, inline, className, children, ...props }: any) {
@@ -458,30 +352,6 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                       {msg.content}
                     </ReactMarkdown>
                   </div>
-                  
-                  {msg.groundingMetadata?.groundingChunks && (
-                    <div className="mt-6 sm:mt-8 pt-4 sm:pt-6 border-t border-slate-100">
-                      <div className="flex items-center gap-2 mb-3 sm:mb-4">
-                        <Search size={12} className="text-blue-400" />
-                        <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.3em] text-blue-400">Verified Grounding Sources</p>
-                      </div>
-                      <div className="flex flex-wrap gap-2 sm:gap-3">
-                        {msg.groundingMetadata.groundingChunks.map((chunk: any, i: number) => (
-                          chunk.web && (
-                            <a 
-                              key={i} 
-                              href={chunk.web.uri} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="text-[8px] sm:text-[10px] bg-white hover:bg-blue-50 px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg sm:rounded-xl border border-slate-200 text-slate-600 font-black transition-all flex items-center gap-1.5 sm:gap-2 shadow-sm hover:border-blue-300 hover:text-blue-700"
-                            >
-                              <ExternalLink size={10} /> {chunk.web.title || "VTU Portal"}
-                            </a>
-                          )
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
                 <div className="flex items-center gap-2 sm:gap-3 px-2 sm:px-4">
                   <p className="text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest">
@@ -491,14 +361,6 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                   <p className="text-[8px] sm:text-[10px] font-bold text-slate-300">
                     {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </p>
-                  {msg.role === 'bot' && (
-                    <button 
-                      onClick={() => copyToClipboard(msg.content, msg.id)}
-                      className="p-1 text-slate-300 hover:text-indigo-600 transition-colors"
-                    >
-                      {copiedId === msg.id ? <Check size={10} /> : <Copy size={10} />}
-                    </button>
-                  )}
                 </div>
               </div>
             </motion.div>
@@ -529,30 +391,18 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       </div>
 
       {/* Input Area */}
-      <div className={cn(
-        "bg-white border-t border-slate-100 shadow-[0_-20px_60px_rgba(0,0,0,0.02)]",
-        isWidget ? "p-3" : "p-4 sm:p-8"
-      )}>
+      <div className="p-4 sm:p-8 bg-white border-t border-slate-100 shadow-[0_-20px_60px_rgba(0,0,0,0.02)]">
         {selectedFile && (
-          <div className={cn(
-            "relative inline-block group",
-            isWidget ? "mb-2" : "mb-4 sm:mb-6"
-          )}>
+          <div className="relative inline-block group mb-4 sm:mb-6">
             {selectedFile.type === 'image' ? (
               <img 
                 src={selectedFile.data} 
                 alt="Preview" 
-                className={cn(
-                  "object-cover rounded-xl border-2 shadow-2xl",
-                  isWidget ? "h-12 w-12 border-blue-400" : "h-20 w-20 sm:h-32 sm:w-32 sm:border-4 border-blue-400"
-                )}
+                className="h-20 w-20 sm:h-32 sm:w-32 object-cover rounded-xl border-2 sm:border-4 border-blue-400 shadow-2xl"
                 referrerPolicy="no-referrer"
               />
             ) : (
-              <div className={cn(
-                "bg-red-50 rounded-xl border-2 shadow-2xl flex flex-col items-center justify-center text-center",
-                isWidget ? "h-12 w-12 border-red-400 p-1" : "h-20 w-20 sm:h-32 sm:w-32 sm:border-4 border-red-400 p-2 sm:p-4"
-              )}>
+              <div className="h-20 w-20 sm:h-32 sm:w-32 bg-red-50 rounded-xl border-2 sm:border-4 border-red-400 shadow-2xl flex flex-col items-center justify-center text-center p-2 sm:p-4">
                 <FileText className="text-red-600 mb-1 w-4 h-4 sm:w-8 sm:h-8" />
                 <p className="text-[6px] sm:text-[10px] font-black text-red-900 truncate w-full">{selectedFile.name}</p>
               </div>
@@ -569,16 +419,10 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         <div className="flex items-end gap-2 max-w-5xl mx-auto">
           <button 
             onClick={() => fileInputRef.current?.click()}
-            className={cn(
-              "rounded-xl bg-slate-50 border border-slate-200 text-slate-400 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm group shrink-0",
-              isWidget ? "p-2" : "p-3 sm:p-5"
-            )}
+            className="p-3 sm:p-5 rounded-xl bg-slate-50 border border-slate-200 text-slate-400 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm group shrink-0"
             title="Attach Document (PDF/Image)"
           >
-            <Paperclip className={cn(
-              "group-hover:rotate-12 transition-transform",
-              isWidget ? "w-4 h-4" : "w-5 h-5 sm:w-7 sm:h-7"
-            )} />
+            <Paperclip className="w-5 h-5 sm:w-7 sm:h-7 group-hover:rotate-12 transition-transform" />
           </button>
           <input 
             type="file" 
@@ -599,45 +443,18 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                 }
               }}
               placeholder="Type a message..."
-              className={cn(
-                "w-full rounded-2xl border border-slate-200 focus:ring-4 focus:ring-blue-50 focus:border-blue-400 focus:outline-none resize-none bg-white shadow-sm font-medium text-slate-800 placeholder:text-slate-400",
-                isWidget ? "p-2 pr-10 text-xs min-h-[40px] max-h-24" : "p-3 sm:p-5 pr-12 sm:pr-20 sm:rounded-3xl sm:focus:ring-8 min-h-[48px] sm:min-h-[72px] max-h-32 sm:max-h-48 text-sm sm:text-base"
-              )}
+              className="w-full p-3 sm:p-5 pr-12 sm:pr-20 rounded-2xl sm:rounded-3xl border border-slate-200 focus:ring-4 sm:focus:ring-8 focus:ring-blue-50 focus:border-blue-400 focus:outline-none resize-none bg-white shadow-sm font-medium text-slate-800 placeholder:text-slate-400 min-h-[48px] sm:min-h-[72px] max-h-32 sm:max-h-48 text-sm sm:text-base"
               rows={1}
             />
             <button
               onClick={handleSend}
               disabled={isLoading || (!input.trim() && !selectedFile)}
-              className={cn(
-                "absolute bg-blue-600 text-white hover:bg-black disabled:opacity-20 disabled:cursor-not-allowed transition-all shadow-2xl",
-                isWidget ? "right-1.5 bottom-1.5 p-1.5 rounded-lg" : "right-2 bottom-2 sm:right-3 sm:bottom-3 p-2 sm:p-4 rounded-xl sm:rounded-2xl"
-              )}
+              className="absolute right-2 bottom-2 sm:right-3 sm:bottom-3 p-2 sm:p-4 bg-blue-600 text-white rounded-xl sm:rounded-2xl hover:bg-black disabled:opacity-20 disabled:cursor-not-allowed transition-all shadow-2xl"
             >
-              <Send className={cn(
-                isWidget ? "w-3.5 h-3.5" : "w-4.5 h-4.5 sm:w-6 sm:h-6"
-              )} />
+              <Send className="w-4.5 h-4.5 sm:w-6 sm:h-6" />
             </button>
           </div>
         </div>
-        
-        {!isWidget && (
-          <div className="mt-4 sm:mt-6 flex flex-col sm:flex-row justify-between items-center px-2 max-w-5xl mx-auto gap-3 sm:gap-0">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-              <p className="text-[8px] sm:text-[10px] text-slate-400 font-black uppercase tracking-[0.2em] sm:tracking-[0.3em]">
-                Intelligence Core Online
-              </p>
-            </div>
-            <div className="flex gap-4 sm:gap-6">
-               <button 
-                 onClick={() => alert("Transcript request recorded. Our team will process this based on your university records.")}
-                 className="text-[8px] sm:text-[10px] text-blue-600 font-black uppercase tracking-[0.2em] sm:tracking-[0.3em] hover:text-blue-900 transition-colors flex items-center gap-1.5 sm:gap-2"
-               >
-                 <Mail className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> Request Transcript
-               </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -649,37 +466,10 @@ function QuickLink({ icon, label, href }: { icon: React.ReactNode, label: string
       href={href} 
       target="_blank" 
       rel="noopener noreferrer"
-      className="flex items-center gap-1.5 sm:gap-2 px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:border-blue-300 hover:text-blue-900 transition-all shadow-sm shrink-0 group"
+      className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/10 border border-white/20 text-white hover:bg-white/20 transition-all shadow-sm shrink-0 group"
     >
-      <div className="text-slate-400 group-hover:text-blue-600 transition-colors">{icon}</div>
-      <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest">{label}</span>
+      <div className="text-blue-200 group-hover:text-white transition-colors">{icon}</div>
+      <span className="text-[10px] font-black uppercase tracking-widest">{label}</span>
     </a>
-  );
-}
-
-function SuggestionCard({ icon, title, desc, onClick, isWidget }: { icon: React.ReactNode, title: string, desc: string, onClick: () => void, isWidget?: boolean }) {
-  return (
-    <button 
-      onClick={onClick}
-      className={cn(
-        "flex flex-col items-start rounded-2xl bg-white border border-slate-100 text-left hover:border-blue-400 hover:shadow-xl transition-all group",
-        isWidget ? "p-3" : "p-4 sm:p-6 sm:rounded-3xl"
-      )}
-    >
-      <div className={cn(
-        "bg-slate-50 rounded-lg text-slate-400 group-hover:bg-blue-50 group-hover:text-blue-600 transition-all",
-        isWidget ? "p-1.5 mb-2" : "p-2 sm:p-3 sm:rounded-xl mb-3 sm:mb-4"
-      )}>
-        {icon}
-      </div>
-      <h4 className={cn(
-        "font-black text-blue-900 tracking-tight font-display",
-        isWidget ? "text-[10px] mb-0.5" : "text-xs sm:text-sm mb-1"
-      )}>{title}</h4>
-      <p className={cn(
-        "text-slate-400 font-bold leading-relaxed",
-        isWidget ? "text-[8px]" : "text-[8px] sm:text-[10px]"
-      )}>{desc}</p>
-    </button>
   );
 }
