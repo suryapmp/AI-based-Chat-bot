@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { 
@@ -30,7 +31,8 @@ You are VTU Intelligence, the official AI academic concierge for Visvesvaraya Te
 - Multimodal Analysis: If a student uploads a screenshot of their result or a handwritten query, use your Vision capabilities to extract the relevant data before responding.
 
 4. OUTPUT FORMATTING (University Standard)
-- Structured Data: Use Markdown Tables for exam schedules or mark distributions.
+- Markdown Tables: ALWAYS use Markdown tables for schedules, fee structures, or eligibility criteria.
+- No HTML: DO NOT use <br> tags or other HTML. Use proper Markdown line breaks and lists.
 - Clarity: Use Bold for Unique Course Codes and Credits.
 - Tone: Professional, supportive, and grounded. Use "Faculty" instead of "Instructor."
 
@@ -218,6 +220,11 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
     setMessages(prev => prev.map(m => 
       m.id === messageId ? { ...m, feedback: m.feedback === type ? undefined : type } : m
     ));
+  };
+
+  const extractPdfLinks = (text: string) => {
+    const pdfRegex = /https?:\/\/[^\s)]+\.pdf/gi;
+    return Array.from(new Set(text.match(pdfRegex) || []));
   };
 
   const handleSend = async () => {
@@ -748,55 +755,90 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                             }} 
                           />
                         ) : (
-                          <ReactMarkdown
-                            components={{
-                              code({ node, inline, className, children, ...props }: any) {
-                                const match = /language-(\w+)/.exec(className || '');
-                                return !inline && match ? (
-                                  <div className="relative group my-4">
-                                    <div className="absolute right-2 top-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                                      <button 
-                                        onClick={() => copyToClipboard(String(children), msg.id)}
-                                        className="p-1.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700"
+                          <div className="relative group/msg">
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                code({ node, inline, className, children, ...props }: any) {
+                                  const match = /language-(\w+)/.exec(className || '');
+                                  return !inline && match ? (
+                                    <div className="relative group my-4">
+                                      <div className="absolute right-2 top-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button 
+                                          onClick={() => copyToClipboard(String(children), msg.id + '-code')}
+                                          className="p-1.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700"
+                                        >
+                                          {copiedId === msg.id + '-code' ? <Check size={12} /> : <Copy size={12} />}
+                                        </button>
+                                      </div>
+                                      <SyntaxHighlighter
+                                        style={vscDarkPlus}
+                                        language={match[1]}
+                                        PreTag="div"
+                                        className="rounded-xl !bg-slate-900 !p-4 border border-slate-800 overflow-x-auto"
+                                        {...props}
                                       >
-                                        {copiedId === msg.id ? <Check size={12} /> : <Copy size={12} />}
-                                      </button>
+                                        {String(children).replace(/\n$/, '')}
+                                      </SyntaxHighlighter>
                                     </div>
-                                    <SyntaxHighlighter
-                                      style={vscDarkPlus}
-                                      language={match[1]}
-                                      PreTag="div"
-                                      className="rounded-xl !bg-slate-900 !p-4 border border-slate-800 overflow-x-auto"
-                                      {...props}
-                                    >
-                                      {String(children).replace(/\n$/, '')}
-                                    </SyntaxHighlighter>
+                                  ) : (
+                                    <code className={cn("bg-slate-100 text-slate-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
+                                      {children}
+                                    </code>
+                                  );
+                                },
+                                table: ({ children }) => (
+                                  <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 bg-white shadow-sm">
+                                    <table className="min-w-full border-collapse">
+                                      {children}
+                                    </table>
                                   </div>
-                                ) : (
-                                  <code className={cn("bg-slate-100 text-slate-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
-                                    {children}
-                                  </code>
-                                );
-                              },
-                              table: ({ children }) => (
-                                <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 bg-white">
-                                  <table className="min-w-full border-collapse">
-                                    {children}
-                                  </table>
-                                </div>
-                              ),
-                              thead: ({ children }) => <thead className="bg-slate-50 border-b border-slate-100">{children}</thead>,
-                              th: ({ children }) => <th className="px-4 py-2 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">{children}</th>,
-                              tr: ({ children }) => <tr className="hover:bg-slate-50/50 transition-colors">{children}</tr>,
-                              td: ({ children }) => <td className="px-4 py-2 text-xs sm:text-sm text-slate-600 border-t border-slate-50">{children}</td>,
-                              strong: ({ children }) => <strong className="text-slate-900 font-bold">{children}</strong>,
-                              h1: ({ children }) => <h1 className="text-lg sm:text-xl font-black text-slate-900 mb-2 tracking-tight">{children}</h1>,
-                              h2: ({ children }) => <h2 className="text-base sm:text-lg font-black text-slate-900 mb-2 tracking-tight">{children}</h2>,
-                              p: ({ children }) => <p className="mb-3 text-slate-600 font-medium leading-relaxed text-sm">{children}</p>,
-                            }}
-                          >
-                            {msg.content}
-                          </ReactMarkdown>
+                                ),
+                                thead: ({ children }) => <thead className="bg-slate-50 border-b border-slate-100">{children}</thead>,
+                                th: ({ children }) => <th className="px-4 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">{children}</th>,
+                                tr: ({ children }) => <tr className="hover:bg-slate-50/50 transition-colors">{children}</tr>,
+                                td: ({ children }) => <td className="px-4 py-3 text-xs sm:text-sm text-slate-600 border-t border-slate-50">{children}</td>,
+                                strong: ({ children }) => <strong className="text-slate-900 font-bold">{children}</strong>,
+                                h1: ({ children }) => <h1 className="text-lg sm:text-xl font-black text-slate-900 mb-3 tracking-tight">{children}</h1>,
+                                h2: ({ children }) => <h2 className="text-base sm:text-lg font-black text-slate-900 mb-2 tracking-tight">{children}</h2>,
+                                p: ({ children }) => <p className="mb-3 text-slate-600 font-medium leading-relaxed text-sm last:mb-0">{children}</p>,
+                                ul: ({ children }) => <ul className="list-disc pl-5 mb-4 space-y-1 text-slate-600 text-sm">{children}</ul>,
+                                ol: ({ children }) => <ol className="list-decimal pl-5 mb-4 space-y-1 text-slate-600 text-sm">{children}</ol>,
+                                li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                              }}
+                            >
+                              {msg.content}
+                            </ReactMarkdown>
+                            
+                            {msg.role === 'bot' && !msg.isTyping && (
+                              <div className="absolute top-0 -right-12 opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                                <button 
+                                  onClick={() => copyToClipboard(msg.content, msg.id)}
+                                  className="p-2 bg-white border border-slate-100 text-slate-400 rounded-xl hover:text-slate-900 hover:border-slate-300 shadow-sm"
+                                  title="Copy message"
+                                >
+                                  {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {msg.role === 'bot' && !msg.isTyping && extractPdfLinks(msg.content).length > 0 && (
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {extractPdfLinks(msg.content).map((link, idx) => (
+                              <a
+                                key={idx}
+                                href={link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-[10px] sm:text-xs font-black hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 group/btn"
+                              >
+                                <FileText size={14} className="group-hover:scale-110 transition-transform" />
+                                DOWNLOAD CIRCULAR (PDF)
+                              </a>
+                            ))}
+                          </div>
                         )}
                   </div>
                   
