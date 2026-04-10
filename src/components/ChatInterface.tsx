@@ -258,7 +258,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          "model": "qwen/qwen3.6-plus:free",
+          "model": "google/gemma-4-26b-a4b-it:free",
           "messages": [
             { "role": "system", "content": SYSTEM_PROMPT },
             ...contents.map(c => ({

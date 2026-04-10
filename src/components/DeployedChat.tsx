@@ -107,6 +107,7 @@ export default function DeployedChat() {
   
   // Lead Capture State
   const [isLeadCaptured, setIsLeadCaptured] = useState(false);
+  const [activeModel, setActiveModel] = useState<string | null>(null);
   const [userData, setUserData] = useState<UserData>({ name: '', phone: '', email: '' });
   const [leadFormError, setLeadFormError] = useState('');
 
@@ -289,29 +290,36 @@ export default function DeployedChat() {
         });
       };
 
-      let response = await makeRequest("google/gemma-4-31b:free");
+      let response = await makeRequest("google/gemma-4-26b-a4b-it:free");
       let data = await response.json();
+      let usedModel = "google/gemma-4-26b-a4b-it:free";
 
       // Multi-tier fallback system for maximum reliability
-      if (!response.ok || (data.error?.message?.includes("Provider returned error")) || (data.error?.message?.includes("No endpoints found"))) {
-        console.warn("Primary model (Gemma 4 31B) failed, trying fallback 1 (GPT-OSS 120B)...");
-        response = await makeRequest("openai/gpt-oss-120b:free");
+      if (!response.ok || (data.error?.message?.includes("Provider returned error")) || (data.error?.message?.includes("No endpoints found")) || (data.error?.message?.includes("User not found"))) {
+        console.warn("Primary model (Gemma 4 26B) failed, trying fallback 1 (Gemma 4 31B)...");
+        response = await makeRequest("google/gemma-4-31b:free");
         data = await response.json();
+        usedModel = "google/gemma-4-31b:free";
         
         if (!response.ok || (data.error?.message?.includes("Provider returned error")) || (data.error?.message?.includes("No endpoints found"))) {
-          console.warn("Fallback 1 failed, trying fallback 2 (Gemma 3)...");
-          response = await makeRequest("google/gemma-3-27b-it:free");
+          console.warn("Fallback 1 failed, trying fallback 2 (GPT-OSS 120B)...");
+          response = await makeRequest("openai/gpt-oss-120b:free");
           data = await response.json();
+          usedModel = "openai/gpt-oss-120b:free";
         }
       }
 
       if (!response.ok) {
         console.error("OpenRouter Error Data:", data);
         const errorMsg = data.error?.message || `OpenRouter Error: ${response.status}`;
+        if (errorMsg.includes("User not found")) {
+          throw new Error("OpenRouter: User not found. This usually means your VITE_OPENROUTER_API_KEY is invalid or not correctly set in your environment variables.");
+        }
         throw new Error(errorMsg);
       }
 
       const botResponse = data.choices[0].message.content;
+      setActiveModel(usedModel);
       setMessages(prev => prev.map(m => 
         m.id === botMessageId ? { ...m, content: botResponse, isTyping: true } : m
       ));
@@ -419,8 +427,13 @@ export default function DeployedChat() {
             <h3 className="font-black text-slate-900 tracking-tight text-lg">VTU Intelligence</h3>
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
                 {isLeadCaptured ? `Active: ${userData.name}` : 'Awaiting Verification'}
+                {activeModel && (
+                  <span className="bg-slate-100 px-1.5 py-0.5 rounded text-[7px] border border-slate-200 text-slate-500">
+                    {activeModel.split('/')[1]}
+                  </span>
+                )}
               </span>
             </div>
           </div>
