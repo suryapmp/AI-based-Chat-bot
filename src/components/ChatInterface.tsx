@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -6,7 +6,8 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { 
   Send, Paperclip, User, Bot, Trash2, Mail, FileText, Eye, 
   Search, Copy, Check, ExternalLink, 
-  BookOpen, Code, Info, GraduationCap, ClipboardList, Globe
+  BookOpen, Code, Info, GraduationCap, ClipboardList, Globe,
+  ThumbsUp, ThumbsDown, Clock
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -33,8 +34,14 @@ Clarity: Use Bold for Unique Course Codes and Credits.
 Tone: Professional, supportive, and grounded. Use "Faculty" instead of "Instructor."
 
 5. TRANSACTIONAL CLOSURE
-At the end of every significant query resolution, you MUST include this standard closing:
-"I have recorded this conversation. Would you like me to send this transcript to your university email for your official reference?"`;
+At the end of every significant query resolution, include:
+"Transcript recorded. Send to email?"`;
+
+interface UserData {
+  name: string;
+  phone: string;
+  email: string;
+}
 
 interface Message {
   id: string;
@@ -48,7 +55,52 @@ interface Message {
   groundingMetadata?: any;
   reasoning_details?: string;
   timestamp: Date;
+  feedback?: 'up' | 'down';
+  isTyping?: boolean;
 }
+
+const Typewriter = ({ text, speed = 10, onComplete }: { text: string, speed?: number, onComplete?: () => void }) => {
+  const [displayedText, setDisplayedText] = useState('');
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    if (index < text.length) {
+      const timeout = setTimeout(() => {
+        setDisplayedText((prev) => prev + text[index]);
+        setIndex((prev) => prev + 1);
+      }, speed);
+      return () => clearTimeout(timeout);
+    } else if (onComplete) {
+      onComplete();
+    }
+  }, [index, text, speed, onComplete]);
+
+  return <ReactMarkdown
+    components={{
+      code({ node, inline, className, children, ...props }: any) {
+        const match = /language-(\w+)/.exec(className || '');
+        return !inline && match ? (
+          <SyntaxHighlighter
+            style={vscDarkPlus}
+            language={match[1]}
+            PreTag="div"
+            className="rounded-xl !bg-slate-900 !p-4 border border-slate-800 overflow-x-auto"
+            {...props}
+          >
+            {String(children).replace(/\n$/, '')}
+          </SyntaxHighlighter>
+        ) : (
+          <code className={cn("bg-slate-100 text-slate-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
+            {children}
+          </code>
+        );
+      },
+      p: ({ children }) => <p className="mb-3 text-slate-600 font-medium leading-relaxed text-sm">{children}</p>,
+    }}
+  >
+    {displayedText}
+  </ReactMarkdown>;
+};
 
 interface ChatInterfaceProps {
   isWidget?: boolean;
@@ -62,6 +114,11 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
   const [viewingPdf, setViewingPdf] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   
+  // Lead Capture State
+  const [isLeadCaptured, setIsLeadCaptured] = useState(false);
+  const [userData, setUserData] = useState<UserData>({ name: '', phone: '', email: '' });
+  const [leadFormError, setLeadFormError] = useState('');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -69,9 +126,64 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // Load data from localStorage on mount
   useEffect(() => {
+    const savedUserData = localStorage.getItem('vtu_user_data');
+    const savedMessages = localStorage.getItem('vtu_chat_history');
+
+    if (savedUserData) {
+      setUserData(JSON.parse(savedUserData));
+      setIsLeadCaptured(true);
+    }
+
+    if (savedMessages) {
+      const parsedMessages = JSON.parse(savedMessages).map((msg: any) => ({
+        ...msg,
+        timestamp: new Date(msg.timestamp)
+      }));
+      setMessages(parsedMessages);
+    }
+  }, []);
+
+  // Save messages to localStorage whenever they change
+  useEffect(() => {
+    if (messages.length > 0) {
+      localStorage.setItem('vtu_chat_history', JSON.stringify(messages));
+    }
     scrollToBottom();
   }, [messages]);
+
+  const handleLeadSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userData.name || !userData.phone || !userData.email) {
+      setLeadFormError('Please fill in all fields.');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userData.email)) {
+      setLeadFormError('Please enter a valid email address.');
+      return;
+    }
+    
+    localStorage.setItem('vtu_user_data', JSON.stringify(userData));
+    setIsLeadCaptured(true);
+    
+    if (messages.length === 0) {
+      const welcomeMsg: Message = {
+        id: 'welcome',
+        role: 'bot',
+        content: `Hi **${userData.name}**! I'm VTU Intelligence. How can I help with your academics today?`,
+        timestamp: new Date()
+      };
+      setMessages([welcomeMsg]);
+    }
+  };
+
+  const clearChat = () => {
+    if (window.confirm('Are you sure you want to clear your chat history?')) {
+      setMessages([]);
+      localStorage.removeItem('vtu_chat_history');
+    }
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -100,6 +212,12 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const handleFeedback = (messageId: string, type: 'up' | 'down') => {
+    setMessages(prev => prev.map(m => 
+      m.id === messageId ? { ...m, feedback: m.feedback === type ? undefined : type } : m
+    ));
+  };
+
   const handleSend = async () => {
     if (!input.trim() && !selectedFile) return;
 
@@ -125,6 +243,8 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       timestamp: new Date(),
     };
     
+    const userContext = `[SYSTEM: You are talking to ${userData.name} (Email: ${userData.email}). Use their name occasionally to be professional.]`;
+
     const callOpenRouter = async (contents: any[]): Promise<{ content: string; reasoning?: string }> => {
       const apiKey = process.env.OPENROUTER_API_KEY;
       if (!apiKey) throw new Error("OpenRouter API Key missing");
@@ -200,7 +320,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
           model: "gemini-3-flash-preview",
           contents: contents,
           config: {
-            systemInstruction: SYSTEM_PROMPT,
+            systemInstruction: `${SYSTEM_PROMPT}\n\n${userContext}`,
             tools: [{ googleSearch: {} }],
           },
         });
@@ -210,7 +330,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
           const chunkText = chunk.text || "";
           fullText += chunkText;
           setMessages(prev => prev.map(m => 
-            m.id === botMessageId ? { ...m, content: fullText, groundingMetadata: chunk.candidates?.[0]?.groundingMetadata || m.groundingMetadata } : m
+            m.id === botMessageId ? { ...m, content: fullText, groundingMetadata: chunk.candidates?.[0]?.groundingMetadata || m.groundingMetadata, isTyping: true } : m
           ));
         }
       } catch (geminiError: any) {
@@ -224,7 +344,8 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               m.id === botMessageId ? { 
                 ...m, 
                 content: fallbackResponse.content, 
-                reasoning_details: fallbackResponse.reasoning 
+                reasoning_details: fallbackResponse.reasoning,
+                isTyping: true
               } : m
             ));
           } catch (fallbackError: any) {
@@ -264,31 +385,124 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       "flex flex-col max-w-6xl mx-auto bg-white overflow-hidden relative",
       isWidget 
         ? "h-full w-full rounded-none border-none shadow-none" 
-        : "h-[calc(100vh-220px)] sm:h-[calc(100vh-180px)] rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-200"
+        : "h-[calc(100vh-220px)] sm:h-[calc(100vh-180px)] rounded-2xl sm:rounded-3xl shadow-xl border border-slate-100"
     )}>
       {/* PDF Modal */}
       {viewingPdf && <PDFModal fileUrl={viewingPdf} onClose={() => setViewingPdf(null)} />}
 
-      {/* Top Bar / Quick Links */}
-      <div className="bg-slate-50 border-b border-slate-200 px-4 sm:px-6 py-2 sm:py-3 flex flex-col sm:flex-row sm:items-center justify-between shrink-0 gap-2 sm:gap-0">
-        <div className="flex items-center gap-3 sm:gap-6 overflow-x-auto no-scrollbar py-1">
-          <QuickLink icon={<Globe size={14} />} label="Results" href="https://results.vtu.ac.in" />
-          <QuickLink icon={<BookOpen size={14} />} label="Syllabus" href="https://vtu.ac.in/en/b-e-scheme-syllabus/" />
-          <QuickLink icon={<ClipboardList size={14} />} label="Circulars" href="https://vtu.ac.in/en/category/administration-circulars/" />
-          <QuickLink icon={<FileText size={14} />} label="Exam Manual" href="https://vtu.ac.in/en/examination-manual/" />
+      {/* Lead Capture Overlay */}
+      {!isLeadCaptured && (
+        <div className="absolute inset-0 z-50 bg-slate-900/10 backdrop-blur-md flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.95, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white rounded-[32px] shadow-2xl w-full max-w-md overflow-hidden border border-slate-100"
+          >
+            <div className="bg-slate-900 p-8 text-white text-center">
+              <div className="bg-white/10 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <GraduationCap size={32} />
+              </div>
+              <h2 className="text-2xl font-black tracking-tight mb-2">Hi! VTU Intelligence</h2>
+              <p className="text-slate-400 text-sm font-medium">Kindly provide your Name, Phone, and Email ID to start.</p>
+            </div>
+            
+            <form onSubmit={handleLeadSubmit} className="p-8 space-y-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Full Name</label>
+                <div className="relative">
+                  <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <input 
+                    type="text" 
+                    required
+                    value={userData.name}
+                    onChange={(e) => setUserData({...userData, name: e.target.value})}
+                    placeholder="John Doe"
+                    className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-100 rounded-xl focus:ring-4 focus:ring-slate-50 focus:border-slate-300 outline-none transition-all font-medium text-slate-800"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Phone Number</label>
+                <div className="relative">
+                  <ClipboardList className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <input 
+                    type="tel" 
+                    required
+                    value={userData.phone}
+                    onChange={(e) => setUserData({...userData, phone: e.target.value})}
+                    placeholder="+91 98765 43210"
+                    className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-100 rounded-xl focus:ring-4 focus:ring-slate-50 focus:border-slate-300 outline-none transition-all font-medium text-slate-800"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">University Email</label>
+                <div className="relative">
+                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <input 
+                    type="email" 
+                    required
+                    value={userData.email}
+                    onChange={(e) => setUserData({...userData, email: e.target.value})}
+                    placeholder="student@vtu.ac.in"
+                    className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-100 rounded-xl focus:ring-4 focus:ring-slate-50 focus:border-slate-300 outline-none transition-all font-medium text-slate-800"
+                  />
+                </div>
+              </div>
+
+              {leadFormError && (
+                <p className="text-red-500 text-xs font-bold text-center">{leadFormError}</p>
+              )}
+
+              <button 
+                type="submit"
+                className="w-full py-4 bg-slate-900 text-white rounded-xl font-black text-sm uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-slate-200 mt-4"
+              >
+                Start Session
+              </button>
+            </form>
+          </motion.div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="flex -space-x-1">
-            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse z-10" />
-            <div className="w-2 h-2 bg-purple-500 rounded-full animate-pulse" />
+      )}
+
+      {/* Top Bar / Quick Links */}
+      <div className="bg-white border-b border-slate-100 px-4 sm:px-6 py-3 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-4">
+          <div className="bg-slate-900 p-2 rounded-xl text-white">
+            <GraduationCap size={20} />
           </div>
-          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest">Multi-Model Active</span>
+          <div>
+            <h3 className="font-black text-slate-900 tracking-tight text-sm sm:text-base">VTU Intelligence</h3>
+            <div className="flex items-center gap-2">
+              <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+              <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                {isLeadCaptured ? `Active: ${userData.name}` : 'Awaiting Verification'}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 sm:gap-4">
+          {isLeadCaptured && (
+            <button 
+              onClick={clearChat}
+              className="p-2 hover:bg-slate-50 rounded-lg transition-colors text-slate-400 hover:text-red-500"
+              title="Clear History"
+            >
+              <Trash2 size={16} />
+            </button>
+          )}
+          <div className="hidden sm:flex items-center gap-3">
+            <QuickLink icon={<Globe size={12} />} label="Results" href="https://results.vtu.ac.in" />
+            <QuickLink icon={<BookOpen size={12} />} label="Syllabus" href="https://vtu.ac.in/en/b-e-scheme-syllabus/" />
+          </div>
         </div>
       </div>
 
       <div className={cn(
-        "flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 bg-[#FDFEFF]",
-        isWidget ? "p-4 space-y-4" : "p-4 sm:p-8 space-y-6 sm:space-y-10"
+        "flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent bg-white",
+        isWidget ? "p-4 space-y-6" : "p-4 sm:p-8 space-y-8 sm:space-y-10"
       )}>
         {messages.length === 0 && (
           <div className={cn(
@@ -299,7 +513,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               initial={{ scale: 0.8, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               className={cn(
-                "bg-blue-600 rounded-[32px] shadow-2xl p-6",
+                "bg-slate-900 rounded-[32px] shadow-xl p-6",
                 isWidget ? "p-4" : "sm:p-10 sm:rounded-[48px]"
               )}
             >
@@ -307,12 +521,12 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
             </motion.div>
             <div className="space-y-2">
               <h3 className={cn(
-                "font-black text-slate-900 tracking-tight font-display",
-                isWidget ? "text-xl" : "text-3xl sm:text-5xl"
+                "font-black text-slate-900 tracking-tight",
+                isWidget ? "text-xl" : "text-3xl sm:text-4xl"
               )}>VTU Intelligence</h3>
               <p className={cn(
-                "text-slate-500 font-medium leading-relaxed mx-auto px-4",
-                isWidget ? "text-xs" : "text-sm sm:text-xl max-w-xl"
+                "text-slate-400 font-medium leading-relaxed mx-auto px-4",
+                isWidget ? "text-xs" : "text-sm sm:text-lg max-w-xl"
               )}>
                 Official Academic Concierge
               </p>
@@ -340,32 +554,42 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         )}
         
         <AnimatePresence initial={false}>
-          {messages.map((msg) => (
-            <motion.div
-              key={msg.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn(
-                "flex w-full gap-3 sm:gap-6 max-w-5xl mx-auto",
-                msg.role === 'user' ? "flex-row-reverse" : "flex-row"
-              )}
-            >
+          {messages.map((msg, idx) => {
+            const showSeparator = idx > 0 && messages[idx-1].role !== msg.role;
+            
+            return (
+              <React.Fragment key={msg.id}>
+                {showSeparator && (
+                  <div className="flex items-center gap-4 max-w-4xl mx-auto py-2">
+                    <div className="h-[1px] flex-1 bg-slate-100" />
+                    <span className="text-[8px] font-black uppercase tracking-[0.3em] text-slate-300">New Response</span>
+                    <div className="h-[1px] flex-1 bg-slate-100" />
+                  </div>
+                )}
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={cn(
+                    "flex w-full gap-3 sm:gap-4 max-w-4xl mx-auto",
+                    msg.role === 'user' ? "flex-row-reverse" : "flex-row"
+                  )}
+                >
               <div className={cn(
-                "w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 shadow-sm border",
-                msg.role === 'user' ? "bg-blue-50 border-blue-100" : "bg-white border-slate-200"
+                "w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 border mt-1",
+                msg.role === 'user' ? "bg-slate-900 border-slate-900" : "bg-slate-50 border-slate-100"
               )}>
-                {msg.role === 'user' ? <User size={16} className="text-blue-600 sm:w-6 sm:h-6" /> : <Bot size={16} className="text-blue-600 sm:w-6 sm:h-6" />}
+                {msg.role === 'user' ? <User size={14} className="text-white" /> : <Bot size={14} className="text-slate-400" />}
               </div>
               
               <div className={cn(
-                "flex-1 space-y-2",
-                msg.role === 'user' ? "text-right" : "text-left"
+                "flex flex-col max-w-[85%] sm:max-w-[75%]",
+                msg.role === 'user' ? "items-end" : "items-start"
               )}>
                 <div className={cn(
-                  "inline-block rounded-2xl sm:rounded-[28px] p-4 sm:p-6 shadow-sm border text-left",
+                  "rounded-2xl p-4 sm:p-5 text-left shadow-sm",
                   msg.role === 'user' 
-                    ? "bg-blue-600 text-white rounded-tr-none border-blue-500 font-semibold" 
-                    : "bg-white text-slate-800 rounded-tl-none border-slate-100"
+                    ? "bg-slate-900 text-white rounded-tr-none font-medium" 
+                    : "bg-slate-50 text-slate-800 rounded-tl-none border border-slate-100"
                 )}>
                   {msg.image && (
                     <img 
@@ -396,67 +620,76 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                     </div>
                   )}
 
-                  <div className="markdown-container prose prose-slate prose-sm sm:prose-base max-w-none prose-blue leading-relaxed">
+                  <div className="markdown-container prose prose-slate prose-sm sm:prose-base max-w-none leading-relaxed">
                     {msg.reasoning_details && (
-                      <div className="mb-4 sm:mb-6 p-3 sm:p-5 bg-slate-50 rounded-xl sm:rounded-2xl border border-slate-200">
-                        <div className="flex items-center gap-2 mb-2">
-                          <BookOpen size={14} className="text-slate-400" />
-                          <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Model Reasoning</p>
+                      <div className="mb-4 p-3 sm:p-4 bg-white/50 rounded-xl border border-slate-200">
+                        <div className="flex items-center gap-2 mb-1">
+                          <BookOpen size={12} className="text-slate-400" />
+                          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Reasoning</p>
                         </div>
-                        <div className="text-xs sm:text-sm text-slate-500 italic leading-relaxed">
+                        <div className="text-xs text-slate-500 italic">
                           {msg.reasoning_details}
                         </div>
                       </div>
                     )}
-                    <ReactMarkdown
-                      components={{
-                        code({ node, inline, className, children, ...props }: any) {
-                          const match = /language-(\w+)/.exec(className || '');
-                          return !inline && match ? (
-                            <div className="relative group my-4 sm:my-6">
-                              <div className="absolute right-2 top-2 sm:right-4 sm:top-4 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button 
-                                  onClick={() => copyToClipboard(String(children), msg.id)}
-                                  className="p-1.5 sm:p-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 border border-slate-700"
-                                >
-                                  {copiedId === msg.id ? <Check size={12} /> : <Copy size={12} />}
-                                </button>
-                              </div>
-                              <SyntaxHighlighter
-                                style={vscDarkPlus}
-                                language={match[1]}
-                                PreTag="div"
-                                className="rounded-xl sm:rounded-2xl !bg-slate-900 !p-4 sm:!p-6 border border-slate-800 shadow-2xl overflow-x-auto"
-                                {...props}
-                              >
-                                {String(children).replace(/\n$/, '')}
-                              </SyntaxHighlighter>
-                            </div>
-                          ) : (
-                            <code className={cn("bg-blue-50 text-blue-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
-                              {children}
-                            </code>
-                          );
-                        },
-                        table: ({ children }) => (
-                          <div className="overflow-x-auto my-4 sm:my-8 rounded-xl sm:rounded-2xl border border-slate-200 shadow-xl bg-white">
-                            <table className="min-w-full border-collapse">
-                              {children}
-                            </table>
-                          </div>
-                        ),
-                        thead: ({ children }) => <thead className="bg-slate-50 border-b border-slate-200">{children}</thead>,
-                        th: ({ children }) => <th className="px-3 py-2 sm:px-6 sm:py-4 text-left text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{children}</th>,
-                        tr: ({ children }) => <tr className="hover:bg-slate-50 transition-colors">{children}</tr>,
-                        td: ({ children }) => <td className="px-3 py-2 sm:px-6 sm:py-4 text-[10px] sm:text-sm text-slate-600 border-t border-slate-100 font-medium">{children}</td>,
-                        strong: ({ children }) => <strong className="text-slate-900 font-black">{children}</strong>,
-                        h1: ({ children }) => <h1 className="text-xl sm:text-2xl font-black text-slate-900 mb-3 sm:mb-4 tracking-tight font-display">{children}</h1>,
-                        h2: ({ children }) => <h2 className="text-lg sm:text-xl font-black text-slate-900 mb-2 sm:mb-3 tracking-tight font-display">{children}</h2>,
-                        p: ({ children }) => <p className="mb-3 sm:mb-4 text-slate-600 font-medium leading-relaxed text-sm sm:text-base">{children}</p>,
-                      }}
-                    >
-                      {msg.content}
-                    </ReactMarkdown>
+                        {msg.role === 'bot' && msg.isTyping ? (
+                          <Typewriter 
+                            text={msg.content} 
+                            onComplete={() => {
+                              setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isTyping: false } : m));
+                            }} 
+                          />
+                        ) : (
+                          <ReactMarkdown
+                            components={{
+                              code({ node, inline, className, children, ...props }: any) {
+                                const match = /language-(\w+)/.exec(className || '');
+                                return !inline && match ? (
+                                  <div className="relative group my-4">
+                                    <div className="absolute right-2 top-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <button 
+                                        onClick={() => copyToClipboard(String(children), msg.id)}
+                                        className="p-1.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700"
+                                      >
+                                        {copiedId === msg.id ? <Check size={12} /> : <Copy size={12} />}
+                                      </button>
+                                    </div>
+                                    <SyntaxHighlighter
+                                      style={vscDarkPlus}
+                                      language={match[1]}
+                                      PreTag="div"
+                                      className="rounded-xl !bg-slate-900 !p-4 border border-slate-800 overflow-x-auto"
+                                      {...props}
+                                    >
+                                      {String(children).replace(/\n$/, '')}
+                                    </SyntaxHighlighter>
+                                  </div>
+                                ) : (
+                                  <code className={cn("bg-slate-100 text-slate-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
+                                    {children}
+                                  </code>
+                                );
+                              },
+                              table: ({ children }) => (
+                                <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 bg-white">
+                                  <table className="min-w-full border-collapse">
+                                    {children}
+                                  </table>
+                                </div>
+                              ),
+                              thead: ({ children }) => <thead className="bg-slate-50 border-b border-slate-100">{children}</thead>,
+                              th: ({ children }) => <th className="px-4 py-2 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">{children}</th>,
+                              tr: ({ children }) => <tr className="hover:bg-slate-50/50 transition-colors">{children}</tr>,
+                              td: ({ children }) => <td className="px-4 py-2 text-xs sm:text-sm text-slate-600 border-t border-slate-50">{children}</td>,
+                              strong: ({ children }) => <strong className="text-slate-900 font-bold">{children}</strong>,
+                              h1: ({ children }) => <h1 className="text-lg sm:text-xl font-black text-slate-900 mb-2 tracking-tight">{children}</h1>,
+                              h2: ({ children }) => <h2 className="text-base sm:text-lg font-black text-slate-900 mb-2 tracking-tight">{children}</h2>,
+                              p: ({ children }) => <p className="mb-3 text-slate-600 font-medium leading-relaxed text-sm">{children}</p>,
+                            }}
+                          >
+                            {msg.content}
+                          </ReactMarkdown>
+                        )}
                   </div>
                   
                   {msg.groundingMetadata?.groundingChunks && (
@@ -483,45 +716,74 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-2 sm:gap-3 px-2 sm:px-4">
-                  <p className="text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                    {msg.role === 'user' ? 'Student Query' : 'Intelligence Core'}
-                  </p>
-                  <span className="w-1 h-1 bg-slate-300 rounded-full" />
-                  <p className="text-[8px] sm:text-[10px] font-bold text-slate-300">
-                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </p>
-                  {msg.role === 'bot' && (
-                    <button 
-                      onClick={() => copyToClipboard(msg.content, msg.id)}
-                      className="p-1 text-slate-300 hover:text-indigo-600 transition-colors"
-                    >
-                      {copiedId === msg.id ? <Check size={10} /> : <Copy size={10} />}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </motion.div>
-          ))}
+                
+                    <div className={cn(
+                      "flex items-center gap-3 mt-1 px-1",
+                      msg.role === 'user' ? "flex-row-reverse" : "flex-row"
+                    )}>
+                      <div className="flex items-center gap-2">
+                        <p className="text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                          {msg.role === 'user' ? 'Student Query' : 'Intelligence Core'}
+                        </p>
+                        <span className="w-1 h-1 bg-slate-300 rounded-full" />
+                        <p className="text-[8px] sm:text-[10px] font-bold text-slate-300 flex items-center gap-1">
+                          <Clock size={8} />
+                          {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+
+                      {msg.role === 'bot' && msg.content && !msg.isTyping && (
+                        <div className="flex items-center gap-1 ml-auto">
+                          <button 
+                            onClick={() => handleFeedback(msg.id, 'up')}
+                            className={cn(
+                              "p-1 rounded-md transition-colors hover:bg-slate-100",
+                              msg.feedback === 'up' ? "text-green-500 bg-green-50" : "text-slate-300"
+                            )}
+                          >
+                            <ThumbsUp size={12} />
+                          </button>
+                          <button 
+                            onClick={() => handleFeedback(msg.id, 'down')}
+                            className={cn(
+                              "p-1 rounded-md transition-colors hover:bg-slate-100",
+                              msg.feedback === 'down' ? "text-red-500 bg-red-50" : "text-slate-300"
+                            )}
+                          >
+                            <ThumbsDown size={12} />
+                          </button>
+                          <button 
+                            onClick={() => copyToClipboard(msg.content, msg.id)}
+                            className="p-1 text-slate-300 hover:text-indigo-600 transition-colors ml-1"
+                          >
+                            {copiedId === msg.id ? <Check size={10} /> : <Copy size={10} />}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              </React.Fragment>
+            );
+          })}
         </AnimatePresence>
         
         {isLoading && !messages[messages.length - 1]?.content && (
-          <div className="flex gap-3 sm:gap-6 max-w-5xl mx-auto">
-            <div className="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-white border border-slate-200 flex items-center justify-center shrink-0 shadow-lg">
-              <Bot size={16} className="text-blue-600 sm:w-6 sm:h-6" />
+          <div className="flex gap-3 sm:gap-4 max-w-4xl mx-auto">
+            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center shrink-0">
+              <Bot size={14} className="text-slate-400" />
             </div>
-            <div className="bg-white rounded-2xl sm:rounded-[28px] p-4 sm:p-6 rounded-tl-none border border-slate-100 flex items-center gap-3 sm:gap-4 shadow-sm">
+            <div className="bg-slate-50 rounded-2xl p-4 rounded-tl-none border border-slate-100 flex items-center gap-3 shadow-sm">
               <div className="flex gap-1">
                 {[0, 1, 2].map(i => (
                   <motion.div 
                     key={i}
-                    animate={{ y: [0, -6, 0] }} 
+                    animate={{ y: [0, -4, 0] }} 
                     transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1 }}
-                    className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-blue-600 rounded-full" 
+                    className="w-1 h-1 bg-slate-400 rounded-full" 
                   />
                 ))}
               </div>
-              <span className="text-[10px] sm:text-xs text-blue-600 font-black uppercase tracking-widest">Thinking...</span>
             </div>
           </div>
         )}
@@ -530,55 +792,51 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
 
       {/* Input Area */}
       <div className={cn(
-        "bg-white border-t border-slate-100 shadow-[0_-20px_60px_rgba(0,0,0,0.02)]",
-        isWidget ? "p-3" : "p-4 sm:p-8"
+        "bg-white border-t border-slate-50",
+        isWidget ? "p-3" : "p-4 sm:p-6"
       )}>
         {selectedFile && (
           <div className={cn(
             "relative inline-block group",
-            isWidget ? "mb-2" : "mb-4 sm:mb-6"
+            isWidget ? "mb-2" : "mb-4"
           )}>
             {selectedFile.type === 'image' ? (
               <img 
                 src={selectedFile.data} 
                 alt="Preview" 
                 className={cn(
-                  "object-cover rounded-xl border-2 shadow-2xl",
-                  isWidget ? "h-12 w-12 border-blue-400" : "h-20 w-20 sm:h-32 sm:w-32 sm:border-4 border-blue-400"
+                  "object-cover rounded-xl border border-slate-200 shadow-lg",
+                  isWidget ? "h-10 w-10" : "h-16 w-16 sm:h-24 sm:w-24"
                 )}
                 referrerPolicy="no-referrer"
               />
             ) : (
               <div className={cn(
-                "bg-red-50 rounded-xl border-2 shadow-2xl flex flex-col items-center justify-center text-center",
-                isWidget ? "h-12 w-12 border-red-400 p-1" : "h-20 w-20 sm:h-32 sm:w-32 sm:border-4 border-red-400 p-2 sm:p-4"
+                "bg-slate-50 rounded-xl border border-slate-200 shadow-lg flex flex-col items-center justify-center text-center",
+                isWidget ? "h-10 w-10 p-1" : "h-16 w-16 sm:h-24 sm:w-24 p-2"
               )}>
-                <FileText className="text-red-600 mb-1 w-4 h-4 sm:w-8 sm:h-8" />
-                <p className="text-[6px] sm:text-[10px] font-black text-red-900 truncate w-full">{selectedFile.name}</p>
+                <FileText className="text-slate-400 mb-1 w-4 h-4 sm:w-6 sm:h-6" />
+                <p className="text-[6px] font-black text-slate-600 truncate w-full">{selectedFile.name}</p>
               </div>
             )}
             <button 
               onClick={clearFile}
-              className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-1 shadow-2xl hover:bg-red-600 transition-all"
+              className="absolute -top-1 -right-1 bg-slate-900 text-white rounded-full p-1 shadow-lg hover:bg-black transition-all"
             >
-              <Trash2 className="w-2 h-2 sm:w-4 sm:h-4" />
+              <Trash2 className="w-2 h-2 sm:w-3 sm:h-3" />
             </button>
           </div>
         )}
         
-        <div className="flex items-end gap-2 max-w-5xl mx-auto">
+        <div className="flex items-end gap-2 max-w-4xl mx-auto">
           <button 
             onClick={() => fileInputRef.current?.click()}
             className={cn(
-              "rounded-xl bg-slate-50 border border-slate-200 text-slate-400 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm group shrink-0",
-              isWidget ? "p-2" : "p-3 sm:p-5"
+              "rounded-xl bg-slate-50 border border-slate-100 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-all shrink-0",
+              isWidget ? "p-2" : "p-3 sm:p-4"
             )}
-            title="Attach Document (PDF/Image)"
           >
-            <Paperclip className={cn(
-              "group-hover:rotate-12 transition-transform",
-              isWidget ? "w-4 h-4" : "w-5 h-5 sm:w-7 sm:h-7"
-            )} />
+            <Paperclip className={isWidget ? "w-4 h-4" : "w-5 h-5"} />
           </button>
           <input 
             type="file" 
@@ -600,8 +858,8 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               }}
               placeholder="Type a message..."
               className={cn(
-                "w-full rounded-2xl border border-slate-200 focus:ring-4 focus:ring-blue-50 focus:border-blue-400 focus:outline-none resize-none bg-white shadow-sm font-medium text-slate-800 placeholder:text-slate-400",
-                isWidget ? "p-2 pr-10 text-xs min-h-[40px] max-h-24" : "p-3 sm:p-5 pr-12 sm:pr-20 sm:rounded-3xl sm:focus:ring-8 min-h-[48px] sm:min-h-[72px] max-h-32 sm:max-h-48 text-sm sm:text-base"
+                "w-full rounded-2xl border border-slate-100 focus:ring-4 focus:ring-slate-50 focus:border-slate-200 focus:outline-none resize-none bg-slate-50/50 font-medium text-slate-800 placeholder:text-slate-400",
+                isWidget ? "p-2 pr-10 text-xs min-h-[40px] max-h-24" : "p-3 sm:p-4 pr-12 sm:pr-16 text-sm min-h-[48px] max-h-32"
               )}
               rows={1}
             />
@@ -609,35 +867,23 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               onClick={handleSend}
               disabled={isLoading || (!input.trim() && !selectedFile)}
               className={cn(
-                "absolute bg-blue-600 text-white hover:bg-black disabled:opacity-20 disabled:cursor-not-allowed transition-all shadow-2xl",
-                isWidget ? "right-1.5 bottom-1.5 p-1.5 rounded-lg" : "right-2 bottom-2 sm:right-3 sm:bottom-3 p-2 sm:p-4 rounded-xl sm:rounded-2xl"
+                "absolute bg-slate-900 text-white hover:bg-black disabled:opacity-20 disabled:cursor-not-allowed transition-all shadow-sm",
+                isWidget ? "right-1.5 bottom-1.5 p-1.5 rounded-lg" : "right-2 bottom-2 p-2 sm:p-2.5 rounded-xl"
               )}
             >
-              <Send className={cn(
-                isWidget ? "w-3.5 h-3.5" : "w-4.5 h-4.5 sm:w-6 sm:h-6"
-              )} />
+              <Send className={isWidget ? "w-3.5 h-3.5" : "w-4 h-4"} />
             </button>
           </div>
         </div>
         
-        {!isWidget && (
-          <div className="mt-4 sm:mt-6 flex flex-col sm:flex-row justify-between items-center px-2 max-w-5xl mx-auto gap-3 sm:gap-0">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-              <p className="text-[8px] sm:text-[10px] text-slate-400 font-black uppercase tracking-[0.2em] sm:tracking-[0.3em]">
-                Intelligence Core Online
-              </p>
-            </div>
-            <div className="flex gap-4 sm:gap-6">
-               <button 
-                 onClick={() => alert("Transcript request recorded. Our team will process this based on your university records.")}
-                 className="text-[8px] sm:text-[10px] text-blue-600 font-black uppercase tracking-[0.2em] sm:tracking-[0.3em] hover:text-blue-900 transition-colors flex items-center gap-1.5 sm:gap-2"
-               >
-                 <Mail className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> Request Transcript
-               </button>
-            </div>
-          </div>
-        )}
+        <div className="mt-4 flex flex-col items-center justify-center gap-1 border-t border-slate-50 pt-4">
+          <p className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em]">
+            © 2026 VTU Intelligence Core
+          </p>
+          <p className="text-[8px] font-bold text-slate-400">
+            Built by Surya Prakash
+          </p>
+        </div>
       </div>
     </div>
   );
