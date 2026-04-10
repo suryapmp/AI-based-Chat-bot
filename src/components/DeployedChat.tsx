@@ -10,25 +10,29 @@ import {
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import PDFModal from './PDFModal';
 
-const SYSTEM_PROMPT = `Advanced System Prompt: VTU Intelligence Core (Deployment Version)
+const SYSTEM_PROMPT = `Advanced System Prompt: VTU Intelligence Core
 1. IDENTITY & GOAL
 You are VTU Intelligence, the official AI academic concierge for Visvesvaraya Technological University (VTU). Your goal is to provide 100% accurate information regarding syllabus, exam regulations, backlog (ATKT) systems, and university circulars.
 
-2. KNOWLEDGE RETRIEVAL & GROUNDING
-Primary Source: Use the provided PDF documents (Syllabus, CBCS Regulations, Exam Manuals).
-Verification Rule: If a student asks about a "2026 Circular," search the live site first. Do not hallucinate dates or rules. If the information is not on the site or in your files, state: "I cannot find an official record of this. Please check the CNC department notice board."
+2. KNOWLEDGE RETRIEVAL & GROUNDING (RAG MODE)
+- Priority Source: Always prioritize information from the official domain "vtu.ac.in" and its sub-domains (e.g., results.vtu.ac.in, exam.vtu.ac.in, etc.).
+- Deep Search: When a student asks a query, perform a thorough search across the university's digital infrastructure.
+- Verification Rule: If a student asks about a "2026 Circular," search the live site first. Do not hallucinate dates or rules. If the information is not on the site or in your files, state: "I cannot find an official record of this. Please check the CNC department notice board."
+- Reporting: When requested for a report, synthesize information from multiple official VTU sources into a structured, comprehensive summary.
 
 3. ADVANCED FEATURES & LOGIC
-Backlog/ATKT Logic: When a student mentions a "Backlog," strictly follow the Manual/Batch Enrollment rules. Remind them that they remain enrolled until they pass and the subject carries forward.
-Examination Focus: Prioritize accurate information for examination schedules, results, revaluation processes, and hall ticket queries.
-Multilingual Support: Default to English, but if a student asks in Kannada, respond fluently in Kannada while maintaining technical accuracy for course codes.
+- Backlog/ATKT Logic: When a student mentions a "Backlog," strictly follow the Manual/Batch Enrollment rules. Remind them that they remain enrolled until they pass and the subject carries forward.
+- Examination Focus: Prioritize accurate information for examination schedules, results, revaluation processes, and hall ticket queries.
+- Multilingual Support: Default to English, but if a student asks in Kannada, respond fluently in Kannada while maintaining technical accuracy for course codes.
+- Multimodal Analysis: If a student uploads a screenshot of their result or a handwritten query, use your Vision capabilities to extract the relevant data before responding.
 
 4. OUTPUT FORMATTING (University Standard)
-Structured Data: Use Markdown Tables for exam schedules or mark distributions.
-Clarity: Use Bold for Unique Course Codes and Credits.
-Tone: Professional, supportive, and grounded.
+- Structured Data: Use Markdown Tables for exam schedules or mark distributions.
+- Clarity: Use Bold for Unique Course Codes and Credits.
+- Tone: Professional, supportive, and grounded. Use "Faculty" instead of "Instructor."
 
 5. TRANSACTIONAL CLOSURE
 At the end of every significant query resolution, include:
@@ -108,6 +112,7 @@ export default function DeployedChat() {
   // Lead Capture State
   const [isLeadCaptured, setIsLeadCaptured] = useState(false);
   const [activeModel, setActiveModel] = useState<string | null>(null);
+  const [ragMode, setRagMode] = useState(true); // Default to RAG mode
   const [userData, setUserData] = useState<UserData>({ name: '', phone: '', email: '' });
   const [leadFormError, setLeadFormError] = useState('');
 
@@ -240,11 +245,60 @@ export default function DeployedChat() {
     setMessages(prev => [...prev, initialBotMessage]);
 
     try {
-      // Use the Vite environment variable for client-side security on GitHub/Netlify/Vercel.
+      // Priority 1: Gemini RAG Mode (if VITE_GEMINI_API_KEY is present)
+      const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
       const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
-      
+
+      if (ragMode && GEMINI_API_KEY) {
+        const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+        const model = genAI.getGenerativeModel({ 
+          model: "gemini-2.0-flash-exp",
+          tools: [{ googleSearchRetrieval: {} }] as any
+        });
+
+        const chat = model.startChat({
+          history: messages.slice(-10).map(msg => ({
+            role: msg.role === 'user' ? 'user' : 'model',
+            parts: [{ text: msg.content }]
+          })),
+          generationConfig: {
+            maxOutputTokens: 2048,
+          },
+        });
+
+        const prompt = `${SYSTEM_PROMPT}\n\n[USER CONTEXT: Name: ${userData.name}, Email: ${userData.email}]\n\nQUERY: ${input}`;
+        
+        let result;
+        if (selectedFile?.type === 'image') {
+          const base64Data = selectedFile.data.split(',')[1];
+          const mimeType = selectedFile.data.split(';')[0].split(':')[1];
+          result = await model.generateContent([
+            prompt,
+            { inlineData: { data: base64Data, mimeType } }
+          ]);
+        } else {
+          result = await chat.sendMessage(prompt);
+        }
+
+        const responseText = result.response.text();
+        const groundingMetadata = (result.response as any).groundingMetadata;
+        
+        setActiveModel("gemini-2.0-flash-exp (RAG)");
+        setMessages(prev => prev.map(m => 
+          m.id === botMessageId ? { 
+            ...m, 
+            content: responseText, 
+            isTyping: true,
+            groundingMetadata: groundingMetadata 
+          } : m
+        ));
+        setIsLoading(false);
+        return;
+      }
+
+      // Priority 2: OpenRouter Fallback
       if (!OPENROUTER_API_KEY) {
-        throw new Error("OpenRouter API Key is missing. Please set VITE_OPENROUTER_API_KEY in your deployment environment (Netlify/Vercel).");
+        throw new Error("API Keys missing. Please set VITE_GEMINI_API_KEY or VITE_OPENROUTER_API_KEY in your environment.");
       }
       
       const history = messages.slice(-10).map(msg => ({
@@ -438,19 +492,42 @@ export default function DeployedChat() {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          {isLeadCaptured && (
-            <button 
-              onClick={clearChat}
-              className="p-2 hover:bg-slate-50 rounded-lg transition-colors text-slate-400 hover:text-red-500"
-              title="Clear History"
-            >
-              <Trash2 size={18} />
-            </button>
-          )}
-          <QuickLink icon={<Globe size={14} />} label="Results" href="https://results.vtu.ac.in" />
-          <QuickLink icon={<BookOpen size={14} />} label="Syllabus" href="https://vtu.ac.in/en/b-e-scheme-syllabus/" />
-        </div>
+          <div className="flex items-center gap-4">
+            {isLeadCaptured && (
+              <div className="flex items-center bg-slate-50 border border-slate-100 rounded-xl p-1 gap-1">
+                <button 
+                  onClick={() => setRagMode(false)}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                    !ragMode ? "bg-white text-slate-900 shadow-sm border border-slate-200" : "text-slate-400 hover:text-slate-600"
+                  )}
+                >
+                  Standard
+                </button>
+                <button 
+                  onClick={() => setRagMode(true)}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5",
+                    ragMode ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "text-slate-400 hover:text-slate-600"
+                  )}
+                >
+                  <Search size={10} />
+                  RAG Mode
+                </button>
+              </div>
+            )}
+            {isLeadCaptured && (
+              <button 
+                onClick={clearChat}
+                className="p-2 hover:bg-slate-50 rounded-lg transition-colors text-slate-400 hover:text-red-500"
+                title="Clear History"
+              >
+                <Trash2 size={18} />
+              </button>
+            )}
+            <QuickLink icon={<Globe size={14} />} label="Results" href="https://results.vtu.ac.in" />
+            <QuickLink icon={<BookOpen size={14} />} label="Syllabus" href="https://vtu.ac.in/en/b-e-scheme-syllabus/" />
+          </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-8 bg-white scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent">
@@ -468,6 +545,32 @@ export default function DeployedChat() {
               <p className="text-slate-400 font-medium text-sm sm:text-lg max-w-xl mx-auto">
                 Official Academic Concierge
               </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 w-full px-4">
+              <SuggestionCard 
+                icon={<ClipboardList size={18} />} 
+                title="Academic Report" 
+                desc="Generate VTU summary" 
+                onClick={() => setInput("Generate a comprehensive report on the latest VTU academic circulars and exam regulations for 2024-25.")}
+              />
+              <SuggestionCard 
+                icon={<Globe size={18} />} 
+                title="Sub-domains" 
+                desc="Search VTU portals" 
+                onClick={() => setInput("Search all VTU sub-domains for information regarding the latest revaluation results.")}
+              />
+              <SuggestionCard 
+                icon={<BookOpen size={18} />} 
+                title="Syllabus" 
+                desc="Scheme & Credits" 
+                onClick={() => setInput("What are the credit requirements for the 2022 scheme in Computer Science?")}
+              />
+              <SuggestionCard 
+                icon={<Search size={18} />} 
+                title="Regulations" 
+                desc="Backlog & ATKT" 
+                onClick={() => setInput("Explain the latest VTU backlog (ATKT) rules for engineering students.")}
+              />
             </div>
           </div>
         )}
@@ -757,5 +860,20 @@ function QuickLink({ icon, label, href }: { icon: React.ReactNode, label: string
       <div className="text-slate-400 group-hover:text-slate-900 transition-colors">{icon}</div>
       <span className="text-[10px] font-black uppercase tracking-widest">{label}</span>
     </a>
+  );
+}
+
+function SuggestionCard({ icon, title, desc, onClick }: { icon: React.ReactNode, title: string, desc: string, onClick: () => void }) {
+  return (
+    <button 
+      onClick={onClick}
+      className="flex flex-col items-start p-4 sm:p-6 rounded-2xl sm:rounded-3xl bg-white border border-slate-100 text-left hover:border-indigo-400 hover:shadow-xl transition-all group"
+    >
+      <div className="bg-slate-50 p-2 sm:p-3 rounded-lg sm:rounded-xl text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-all mb-3 sm:mb-4">
+        {icon}
+      </div>
+      <h4 className="font-black text-slate-900 tracking-tight text-xs sm:text-sm mb-1">{title}</h4>
+      <p className="text-slate-400 font-bold leading-relaxed text-[8px] sm:text-[10px]">{desc}</p>
+    </button>
   );
 }

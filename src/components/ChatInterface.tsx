@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -17,21 +17,22 @@ const SYSTEM_PROMPT = `Advanced System Prompt: VTU Intelligence Core
 1. IDENTITY & GOAL
 You are VTU Intelligence, the official AI academic concierge for Visvesvaraya Technological University (VTU). Your goal is to provide 100% accurate information regarding syllabus, exam regulations, backlog (ATKT) systems, and university circulars.
 
-2. KNOWLEDGE RETRIEVAL & GROUNDING
-Primary Source: Use the provided PDF documents (Syllabus, CBCS Regulations, Exam Manuals).
-Live Grounding: For the latest updates, use Google Search Grounding restricted to the vtu.ac.in domain.
-Verification Rule: If a student asks about a "2026 Circular," search the live site first. Do not hallucinate dates or rules. If the information is not on the site or in your files, state: "I cannot find an official record of this. Please check the CNC department notice board."
+2. KNOWLEDGE RETRIEVAL & GROUNDING (RAG MODE)
+- Priority Source: Always prioritize information from the official domain "vtu.ac.in" and its sub-domains (e.g., results.vtu.ac.in, exam.vtu.ac.in, etc.).
+- Deep Search: When a student asks a query, perform a thorough search across the university's digital infrastructure.
+- Verification Rule: If a student asks about a "2026 Circular," search the live site first. Do not hallucinate dates or rules. If the information is not on the site or in your files, state: "I cannot find an official record of this. Please check the CNC department notice board."
+- Reporting: When requested for a report, synthesize information from multiple official VTU sources into a structured, comprehensive summary.
 
 3. ADVANCED FEATURES & LOGIC
-Backlog/ATKT Logic: When a student mentions a "Backlog," strictly follow the Manual/Batch Enrollment rules. Remind them that they remain enrolled until they pass and the subject carries forward.
-Examination Focus: Prioritize accurate information for examination schedules, results, revaluation processes, and hall ticket queries.
-Multilingual Support: Default to English, but if a student asks in Kannada, respond fluently in Kannada while maintaining technical accuracy for course codes.
-Multimodal Analysis: If a student uploads a screenshot of their result or a handwritten query, use your Vision capabilities to extract the relevant data before responding.
+- Backlog/ATKT Logic: When a student mentions a "Backlog," strictly follow the Manual/Batch Enrollment rules. Remind them that they remain enrolled until they pass and the subject carries forward.
+- Examination Focus: Prioritize accurate information for examination schedules, results, revaluation processes, and hall ticket queries.
+- Multilingual Support: Default to English, but if a student asks in Kannada, respond fluently in Kannada while maintaining technical accuracy for course codes.
+- Multimodal Analysis: If a student uploads a screenshot of their result or a handwritten query, use your Vision capabilities to extract the relevant data before responding.
 
 4. OUTPUT FORMATTING (University Standard)
-Structured Data: Use Markdown Tables for exam schedules or mark distributions.
-Clarity: Use Bold for Unique Course Codes and Credits.
-Tone: Professional, supportive, and grounded. Use "Faculty" instead of "Instructor."
+- Structured Data: Use Markdown Tables for exam schedules or mark distributions.
+- Clarity: Use Bold for Unique Course Codes and Credits.
+- Tone: Professional, supportive, and grounded. Use "Faculty" instead of "Instructor."
 
 5. TRANSACTIONAL CLOSURE
 At the end of every significant query resolution, include:
@@ -116,6 +117,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
   
   // Lead Capture State
   const [isLeadCaptured, setIsLeadCaptured] = useState(false);
+  const [ragMode, setRagMode] = useState(true);
   const [userData, setUserData] = useState<UserData>({ name: '', phone: '', email: '' });
   const [leadFormError, setLeadFormError] = useState('');
 
@@ -243,7 +245,58 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       timestamp: new Date(),
     };
     
+    setMessages(prev => [...prev, initialBotMessage]);
+
     const userContext = `[SYSTEM: You are talking to ${userData.name} (Email: ${userData.email}). Use their name occasionally to be professional.]`;
+
+    // Priority 1: Gemini RAG Mode
+    if (ragMode && process.env.GEMINI_API_KEY) {
+      try {
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        const model = genAI.getGenerativeModel({ 
+          model: "gemini-2.0-flash-exp",
+          tools: [{ googleSearchRetrieval: {} }] as any
+        });
+
+        const chat = model.startChat({
+          history: messages.slice(-10).map(msg => ({
+            role: msg.role === 'user' ? 'user' : 'model',
+            parts: [{ text: msg.content }]
+          })),
+        });
+
+        const prompt = `${SYSTEM_PROMPT}\n\n${userContext}\n\nQUERY: ${input}`;
+        
+        let result;
+        if (selectedFile?.type === 'image') {
+          const base64Data = selectedFile.data.split(',')[1];
+          const mimeType = selectedFile.data.split(';')[0].split(':')[1];
+          result = await model.generateContent([
+            prompt,
+            { inlineData: { data: base64Data, mimeType } }
+          ]);
+        } else {
+          result = await chat.sendMessage(prompt);
+        }
+
+        const responseText = result.response.text();
+        const groundingMetadata = (result.response as any).groundingMetadata;
+
+        setMessages(prev => prev.map(m => 
+          m.id === botMessageId ? { 
+            ...m, 
+            content: responseText, 
+            isTyping: true,
+            groundingMetadata: groundingMetadata 
+          } : m
+        ));
+        setIsLoading(false);
+        return;
+      } catch (error) {
+        console.error("Gemini RAG Error:", error);
+        // Fallback to OpenRouter if Gemini fails
+      }
+    }
 
     const callOpenRouter = async (contents: any[]): Promise<{ content: string; reasoning?: string }> => {
       const apiKey = process.env.OPENROUTER_API_KEY;
@@ -315,24 +368,37 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         if (!process.env.GEMINI_API_KEY) {
           throw new Error("GEMINI_API_KEY is missing. Please check your environment variables.");
         }
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-        const result = await ai.models.generateContentStream({
-          model: "gemini-3-flash-preview",
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        const model = genAI.getGenerativeModel({ 
+          model: "gemini-2.0-flash-exp",
+          tools: [{ googleSearchRetrieval: {} }] as any
+        });
+        
+        const result = await model.generateContentStream({
           contents: contents,
-          config: {
-            systemInstruction: `${SYSTEM_PROMPT}\n\n${userContext}`,
-            tools: [{ googleSearch: {} }],
-          },
+          systemInstruction: `${SYSTEM_PROMPT}\n\n${userContext}`,
         });
 
         let fullText = "";
-        for await (const chunk of result) {
-          const chunkText = chunk.text || "";
+        for await (const chunk of result.stream) {
+          const chunkText = chunk.text();
           fullText += chunkText;
           setMessages(prev => prev.map(m => 
-            m.id === botMessageId ? { ...m, content: fullText, groundingMetadata: chunk.candidates?.[0]?.groundingMetadata || m.groundingMetadata, isTyping: true } : m
+            m.id === botMessageId ? { ...m, content: fullText, isTyping: true } : m
           ));
         }
+
+        const response = await result.response;
+        const groundingMetadata = (response as any).groundingMetadata;
+        
+        setMessages(prev => prev.map(m => 
+          m.id === botMessageId ? { 
+            ...m, 
+            content: fullText, 
+            isTyping: true,
+            groundingMetadata: groundingMetadata 
+          } : m
+        ));
       } catch (geminiError: any) {
         console.error("Gemini failed, trying OpenRouter fallback...", geminiError);
         const openRouterKey = process.env.OPENROUTER_API_KEY;
@@ -477,13 +543,41 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
             <h3 className="font-black text-slate-900 tracking-tight text-sm sm:text-base">VTU Intelligence</h3>
             <div className="flex items-center gap-2">
               <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+              <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
                 {isLeadCaptured ? `Active: ${userData.name}` : 'Awaiting Verification'}
+                {ragMode && (
+                  <span className="bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded text-[7px] border border-indigo-100 font-black">
+                    RAG ACTIVE
+                  </span>
+                )}
               </span>
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-4">
+          {isLeadCaptured && (
+            <div className="flex items-center bg-slate-50 border border-slate-100 rounded-xl p-1 gap-1">
+              <button 
+                onClick={() => setRagMode(false)}
+                className={cn(
+                  "px-2 sm:px-3 py-1 rounded-lg text-[8px] sm:text-[10px] font-black uppercase tracking-widest transition-all",
+                  !ragMode ? "bg-white text-slate-900 shadow-sm border border-slate-200" : "text-slate-400 hover:text-slate-600"
+                )}
+              >
+                Standard
+              </button>
+              <button 
+                onClick={() => setRagMode(true)}
+                className={cn(
+                  "px-2 sm:px-3 py-1 rounded-lg text-[8px] sm:text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5",
+                  ragMode ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "text-slate-400 hover:text-slate-600"
+                )}
+              >
+                <Search size={10} />
+                RAG
+              </button>
+            </div>
+          )}
           {isLeadCaptured && (
             <button 
               onClick={clearChat}
@@ -536,17 +630,31 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               isWidget ? "grid-cols-1 gap-2" : "grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4"
             )}>
               <SuggestionCard 
-                icon={<Search size={isWidget ? 14 : 18} />} 
-                title="Exams" 
-                desc="Latest results" 
-                onClick={() => setInput("What are the latest revaluation circulars?")}
+                icon={<ClipboardList size={isWidget ? 14 : 18} />} 
+                title="Academic Report" 
+                desc="Generate VTU summary" 
+                onClick={() => setInput("Generate a comprehensive report on the latest VTU academic circulars and exam regulations for 2024-25.")}
                 isWidget={isWidget}
               />
               <SuggestionCard 
-                icon={<Code size={isWidget ? 14 : 18} />} 
-                title="Scheme" 
-                desc="Course codes" 
-                onClick={() => setInput("Show me the credit distribution for CSE.")}
+                icon={<Globe size={isWidget ? 14 : 18} />} 
+                title="Sub-domains" 
+                desc="Search VTU portals" 
+                onClick={() => setInput("Search all VTU sub-domains for information regarding the latest revaluation results.")}
+                isWidget={isWidget}
+              />
+              <SuggestionCard 
+                icon={<BookOpen size={isWidget ? 14 : 18} />} 
+                title="Syllabus" 
+                desc="Scheme & Credits" 
+                onClick={() => setInput("What are the credit requirements for the 2022 scheme in Computer Science?")}
+                isWidget={isWidget}
+              />
+              <SuggestionCard 
+                icon={<Search size={isWidget ? 14 : 18} />} 
+                title="Regulations" 
+                desc="Backlog & ATKT" 
+                onClick={() => setInput("Explain the latest VTU backlog (ATKT) rules for engineering students.")}
                 isWidget={isWidget}
               />
             </div>
