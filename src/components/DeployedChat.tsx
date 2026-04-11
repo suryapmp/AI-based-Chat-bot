@@ -110,9 +110,17 @@ export default function DeployedChat() {
   const [leadFormError, setLeadFormError] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [notification, setNotification] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -226,12 +234,13 @@ export default function DeployedChat() {
         });
 
         if (response.ok) {
-          alert('Transcript sent to your email successfully!');
+          setNotification({ message: 'Transcript sent to your email successfully!', type: 'success' });
         } else {
           throw new Error('Failed to send email');
         }
       } catch (error) {
         console.error('Email error:', error);
+        setNotification({ message: 'Using local mail client...', type: 'error' });
         window.location.href = `mailto:${userData.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyText)}`;
       } finally {
         setIsSendingEmail(false);
@@ -537,6 +546,24 @@ export default function DeployedChat() {
 
   return (
     <div className="flex flex-col h-screen w-full bg-vtu-bg overflow-hidden relative bg-gradient-to-br from-vtu-bg via-white to-vtu-bg/50">
+      {/* Notification Toast */}
+      <AnimatePresence>
+        {notification && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className={cn(
+              "fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border backdrop-blur-md",
+              notification.type === 'success' ? "bg-green-500/90 border-green-400 text-white" : "bg-red-500/90 border-red-400 text-white"
+            )}
+          >
+            {notification.type === 'success' ? <Check size={18} /> : <Info size={18} />}
+            <span className="font-bold text-sm">{notification.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* PDF Modal */}
       {viewingPdf && <PDFModal fileUrl={viewingPdf} onClose={() => setViewingPdf(null)} />}
 
