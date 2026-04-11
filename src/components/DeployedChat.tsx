@@ -6,7 +6,8 @@ import {
   Send, Paperclip, User, Bot, Trash2, Mail, FileText, Eye, 
   Search, Copy, Check, ExternalLink, 
   BookOpen, Code, Info, GraduationCap, ClipboardList, Globe,
-  ThumbsUp, ThumbsDown, Clock
+  ThumbsUp, ThumbsDown, Clock,
+  Mic, MicOff, Loader2, Share2, MessageSquare
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -19,16 +20,18 @@ const SYSTEM_PROMPT = `Advanced System Prompt: VTU Intelligence Core
 You are VTU Intelligence, the official AI academic concierge for Visvesvaraya Technological University (VTU). Your goal is to provide 100% accurate information regarding syllabus, exam regulations, backlog (ATKT) systems, and university circulars.
 
 2. KNOWLEDGE RETRIEVAL & GROUNDING (RAG MODE)
-- Priority Source: Always prioritize information from the official domain "vtu.ac.in" and its sub-domains (e.g., results.vtu.ac.in, exam.vtu.ac.in, etc.).
-- Deep Search: When a student asks a query, perform a thorough search across the university's digital infrastructure.
-- Verification Rule: If a student asks about a "2026 Circular," search the live site first. Do not hallucinate dates or rules. If the information is not on the site or in your files, state: "I cannot find an official record of this. Please check the CNC department notice board."
+- Priority Source: Always prioritize information from the official domain "vtu.ac.in" and its sub-domains (e.g., results.vtu.ac.in, exam.vtu.ac.in, admissions.vtu.ac.in, academic.vtu.ac.in, etc.).
+- Deep Search: When a student asks a query, perform a thorough search across the university's digital infrastructure including all subdomains.
+- Verification Rule: If a student asks about a "2026 Circular," search the live site first. Do not hallucinate dates or rules. If the information is not on the site or in your files, state: "I cannot find an official record of this on vtu.ac.in or its subdomains. Please check the CNC department notice board."
 - Reporting: When requested for a report, synthesize information from multiple official VTU sources into a structured, comprehensive summary.
+- Subdomains: Explicitly fetch and read content from subdomains like admissions.vtu.ac.in for entrance exams, results.vtu.ac.in for grades, and academic.vtu.ac.in for syllabus.
 
 3. ADVANCED FEATURES & LOGIC
 - Backlog/ATKT Logic: When a student mentions a "Backlog," strictly follow the Manual/Batch Enrollment rules. Remind them that they remain enrolled until they pass and the subject carries forward.
 - Examination Focus: Prioritize accurate information for examination schedules, results, revaluation processes, and hall ticket queries.
 - Multilingual Support: Default to English, but if a student asks in Kannada, respond fluently in Kannada while maintaining technical accuracy for course codes.
 - Multimodal Analysis: If a student uploads a screenshot of their result or a handwritten query, use your Vision capabilities to extract the relevant data before responding.
+- Sharing: You can now help students share their chat transcripts via Email or WhatsApp. If they ask to "send this to my email" or "share on whatsapp", tell them to use the buttons at the bottom of the chat window.
 
 4. OUTPUT FORMATTING (University Standard)
 - Markdown Tables: ALWAYS use Markdown tables for schedules, fee structures, or eligibility criteria.
@@ -38,7 +41,7 @@ You are VTU Intelligence, the official AI academic concierge for Visvesvaraya Te
 
 5. TRANSACTIONAL CLOSURE
 At the end of every significant query resolution, include:
-"Transcript recorded. Send to email?"`;
+"Transcript recorded. Send to email or WhatsApp?"`;
 
 interface UserData {
   name: string;
@@ -62,22 +65,8 @@ interface Message {
 }
 
 const Typewriter = ({ text, speed = 10, onComplete }: { text: string, speed?: number, onComplete?: () => void }) => {
-  const [displayedText, setDisplayedText] = useState('');
-  const [index, setIndex] = useState(0);
-
-  useEffect(() => {
-    if (index < text.length) {
-      const timeout = setTimeout(() => {
-        setDisplayedText((prev) => prev + text[index]);
-        setIndex((prev) => prev + 1);
-      }, speed);
-      return () => clearTimeout(timeout);
-    } else if (onComplete) {
-      onComplete();
-    }
-  }, [index, text, speed, onComplete]);
-
   return <ReactMarkdown
+    remarkPlugins={[remarkGfm]}
     components={{
       code({ node, inline, className, children, ...props }: any) {
         const match = /language-(\w+)/.exec(className || '');
@@ -100,7 +89,7 @@ const Typewriter = ({ text, speed = 10, onComplete }: { text: string, speed?: nu
       p: ({ children }) => <p className="mb-3 text-slate-600 font-medium leading-relaxed text-sm">{children}</p>,
     }}
   >
-    {displayedText}
+    {text}
   </ReactMarkdown>;
 };
 
@@ -118,12 +107,90 @@ export default function DeployedChat() {
   const [ragMode, setRagMode] = useState(true); // Default to RAG mode
   const [userData, setUserData] = useState<UserData>({ name: '', phone: '', email: '' });
   const [leadFormError, setLeadFormError] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const shareTranscript = async (method: 'email' | 'whatsapp') => {
+    const transcript = messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n');
+    const subject = `VTU Intelligence Chat Transcript - ${userData.name}`;
+    const bodyText = `Hello,\n\nHere is the chat transcript from VTU Intelligence Core:\n\n${transcript}\n\nBest regards,\nVTU Intelligence Core`;
+
+    if (method === 'email') {
+      setIsSendingEmail(true);
+      try {
+        const response = await fetch('/api/send-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: userData.email,
+            subject: subject,
+            text: bodyText,
+            html: `<div style="font-family: sans-serif; color: #333;">
+              <h2 style="color: #2563eb;">VTU Intelligence Chat Transcript</h2>
+              <p>Hello <strong>${userData.name}</strong>,</p>
+              <p>Here is your conversation history with the VTU Intelligence Core.</p>
+              <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
+              <div style="white-space: pre-wrap; background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                ${transcript.replace(/\n/g, '<br/>')}
+              </div>
+              <p style="margin-top: 20px; font-size: 12px; color: #64748b;">
+                This is an automated message from the VTU Intelligence Core.
+              </p>
+            </div>`
+          })
+        });
+
+        if (response.ok) {
+          alert('Transcript sent to your email successfully!');
+        } else {
+          throw new Error('Failed to send email');
+        }
+      } catch (error) {
+        console.error('Email error:', error);
+        window.location.href = `mailto:${userData.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyText)}`;
+      } finally {
+        setIsSendingEmail(false);
+      }
+    } else {
+      const cleanPhone = userData.phone.replace(/\D/g, '');
+      const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(subject + '\n\n' + bodyText)}`;
+      window.open(waUrl, '_blank');
+    }
+  };
+
+  const toggleVoiceInput = () => {
+    if (!('webkitSpeechRecognition' in window) && !('speechRecognition' in window)) {
+      alert('Speech recognition is not supported in your browser.');
+      return;
+    }
+
+    if (isListening) {
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).speechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setInput(prev => prev + (prev ? ' ' : '') + transcript);
+    };
+
+    recognition.start();
   };
 
   // Load data from localStorage on mount
@@ -491,11 +558,6 @@ export default function DeployedChat() {
               <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
               <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
                 {isLeadCaptured ? `Active: ${userData.name}` : 'Awaiting Verification'}
-                {activeModel && (
-                  <span className="bg-slate-100 px-1.5 py-0.5 rounded text-[7px] border border-slate-200 text-slate-500">
-                    {activeModel.split('/')[1]}
-                  </span>
-                )}
               </span>
             </div>
           </div>
@@ -651,82 +713,74 @@ export default function DeployedChat() {
                       )}
 
                       <div className="markdown-container prose prose-slate prose-sm sm:prose-base max-w-none leading-relaxed">
-                        {msg.role === 'bot' && msg.isTyping ? (
-                          <Typewriter 
-                            text={msg.content} 
-                            onComplete={() => {
-                              setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isTyping: false } : m));
-                            }} 
-                          />
-                        ) : (
-                          <div className="relative group/msg">
-                            <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
-                              components={{
-                                code({ node, inline, className, children, ...props }: any) {
-                                  const match = /language-(\w+)/.exec(className || '');
-                                  return !inline && match ? (
-                                    <div className="relative group my-4">
-                                      <div className="absolute right-2 top-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <button 
-                                          onClick={() => copyToClipboard(String(children), msg.id + '-code')}
-                                          className="p-1.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700"
-                                        >
-                                          {copiedId === msg.id + '-code' ? <Check size={12} /> : <Copy size={12} />}
-                                        </button>
-                                      </div>
-                                      <SyntaxHighlighter
-                                        style={vscDarkPlus}
-                                        language={match[1]}
-                                        PreTag="div"
-                                        className="rounded-xl !bg-slate-900 !p-4 border border-slate-800 overflow-x-auto"
-                                        {...props}
+                        <div className="relative group/msg">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              code({ node, inline, className, children, ...props }: any) {
+                                const match = /language-(\w+)/.exec(className || '');
+                                return !inline && match ? (
+                                  <div className="relative group my-4">
+                                    <div className="absolute right-2 top-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <button 
+                                        onClick={() => copyToClipboard(String(children), msg.id + '-code')}
+                                        className="p-1.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700"
                                       >
-                                        {String(children).replace(/\n$/, '')}
-                                      </SyntaxHighlighter>
+                                        {copiedId === msg.id + '-code' ? <Check size={12} /> : <Copy size={12} />}
+                                      </button>
                                     </div>
-                                  ) : (
-                                    <code className={cn("bg-slate-100 text-slate-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
-                                      {children}
-                                    </code>
-                                  );
-                                },
-                                table: ({ children }) => (
-                                  <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 bg-white shadow-sm">
-                                    <table className="min-w-full border-collapse">
-                                      {children}
-                                    </table>
+                                    <SyntaxHighlighter
+                                      style={vscDarkPlus}
+                                      language={match[1]}
+                                      PreTag="div"
+                                      className="rounded-xl !bg-slate-900 !p-4 border border-slate-800 overflow-x-auto"
+                                      {...props}
+                                    >
+                                      {String(children).replace(/\n$/, '')}
+                                    </SyntaxHighlighter>
                                   </div>
-                                ),
-                                thead: ({ children }) => <thead className="bg-slate-50 border-b border-slate-100">{children}</thead>,
-                                th: ({ children }) => <th className="px-4 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">{children}</th>,
-                                tr: ({ children }) => <tr className="hover:bg-slate-50/50 transition-colors">{children}</tr>,
-                                td: ({ children }) => <td className="px-4 py-3 text-xs sm:text-sm text-slate-600 border-t border-slate-50">{children}</td>,
-                                strong: ({ children }) => <strong className="text-slate-900 font-bold">{children}</strong>,
-                                h1: ({ children }) => <h1 className="text-lg sm:text-xl font-black text-slate-900 mb-3 tracking-tight">{children}</h1>,
-                                h2: ({ children }) => <h2 className="text-base sm:text-lg font-black text-slate-900 mb-2 tracking-tight">{children}</h2>,
-                                p: ({ children }) => <p className="mb-3 text-slate-600 font-medium leading-relaxed text-sm last:mb-0">{children}</p>,
-                                ul: ({ children }) => <ul className="list-disc pl-5 mb-4 space-y-1 text-slate-600 text-sm">{children}</ul>,
-                                ol: ({ children }) => <ol className="list-decimal pl-5 mb-4 space-y-1 text-slate-600 text-sm">{children}</ol>,
-                                li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-                              }}
-                            >
-                              {msg.content}
-                            </ReactMarkdown>
+                                ) : (
+                                  <code className={cn("bg-slate-100 text-slate-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
+                                    {children}
+                                  </code>
+                                );
+                              },
+                              table: ({ children }) => (
+                                <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 bg-white shadow-sm">
+                                  <table className="min-w-full border-collapse">
+                                    {children}
+                                  </table>
+                                </div>
+                              ),
+                              thead: ({ children }) => <thead className="bg-slate-50 border-b border-slate-100">{children}</thead>,
+                              th: ({ children }) => <th className="px-4 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">{children}</th>,
+                              tr: ({ children }) => <tr className="hover:bg-slate-50/50 transition-colors">{children}</tr>,
+                              td: ({ children }) => <td className="px-4 py-3 text-xs sm:text-sm text-slate-600 border-t border-slate-50">{children}</td>,
+                              strong: ({ children }) => <strong className="text-slate-900 font-bold">{children}</strong>,
+                              h1: ({ children }) => <h1 className="text-lg sm:text-xl font-black text-slate-900 mb-3 tracking-tight">{children}</h1>,
+                              h2: ({ children }) => <h2 className="text-base sm:text-lg font-black text-slate-900 mb-2 tracking-tight">{children}</h2>,
+                              p: ({ children }) => <p className="mb-3 text-slate-600 font-medium leading-relaxed text-sm last:mb-0">{children}</p>,
+                              ul: ({ children }) => <ul className="list-disc pl-5 mb-4 space-y-1 text-slate-600 text-sm">{children}</ul>,
+                              ol: ({ children }) => <ol className="list-decimal pl-5 mb-4 space-y-1 text-slate-600 text-sm">{children}</ol>,
+                              li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                            }}
+                          >
+                            {msg.content}
+                          </ReactMarkdown>
 
-                            {msg.role === 'bot' && !msg.isTyping && (
-                              <div className="absolute top-0 -right-12 opacity-0 group-hover/msg:opacity-100 transition-opacity">
-                                <button 
-                                  onClick={() => copyToClipboard(msg.content, msg.id)}
-                                  className="p-2 bg-white border border-slate-100 text-slate-400 rounded-xl hover:text-slate-900 hover:border-slate-300 shadow-sm"
-                                  title="Copy message"
-                                >
-                                  {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        )}
+                          {msg.role === 'bot' && (
+                            <div className="absolute top-0 -right-12 opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                              <button 
+                                onClick={() => copyToClipboard(msg.content, msg.id)}
+                                className="p-2 bg-white border border-slate-100 text-slate-400 rounded-xl hover:text-slate-900 hover:border-slate-300 shadow-sm"
+                                title="Copy message"
+                              >
+                                {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
 
                         {msg.role === 'bot' && !msg.isTyping && extractPdfLinks(msg.content).length > 0 && (
                           <div className="mt-4 flex flex-wrap gap-2">
@@ -809,8 +863,7 @@ export default function DeployedChat() {
                         </div>
                       )}
                     </div>
-                  </div>
-                </motion.div>
+                  </motion.div>
               </React.Fragment>
             );
           })}
@@ -840,7 +893,26 @@ export default function DeployedChat() {
 
       {/* Input Area */}
       <div className="bg-white border-t border-slate-50 p-4 sm:p-6">
-        {selectedFile && (
+        <div className="max-w-4xl mx-auto space-y-4">
+          {messages.length > 0 && (
+            <div className="flex items-center gap-2 justify-center pb-2">
+              <button 
+                onClick={() => shareTranscript('email')}
+                disabled={isSendingEmail}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border border-slate-100 disabled:opacity-50"
+              >
+                {isSendingEmail ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />} 
+                Email Transcript
+              </button>
+              <button 
+                onClick={() => shareTranscript('whatsapp')}
+                className="flex items-center gap-2 px-4 py-2 bg-green-50 hover:bg-green-100 text-green-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border border-green-100"
+              >
+                <MessageSquare size={14} /> WhatsApp
+              </button>
+            </div>
+          )}
+          {selectedFile && (
           <div className="relative inline-block group mb-4">
             {selectedFile.type === 'image' ? (
               <img 
@@ -890,9 +962,21 @@ export default function DeployedChat() {
                 }
               }}
               placeholder="Type a message..."
-              className="w-full rounded-2xl border border-slate-100 p-3 sm:p-4 pr-12 sm:pr-16 text-sm min-h-[48px] max-h-32 focus:ring-4 focus:ring-slate-50 focus:border-slate-200 focus:outline-none resize-none bg-slate-50/50 font-medium text-slate-800 placeholder:text-slate-400"
+              className="w-full rounded-2xl border border-slate-100 p-3 sm:p-4 pr-20 sm:pr-24 text-sm min-h-[48px] max-h-32 focus:ring-4 focus:ring-slate-50 focus:border-slate-200 focus:outline-none resize-none bg-slate-50/50 font-medium text-slate-800 placeholder:text-slate-400"
               rows={1}
             />
+            <div className="absolute right-10 bottom-2 flex items-center gap-1">
+              <button
+                onClick={toggleVoiceInput}
+                className={cn(
+                  "p-1.5 rounded-lg transition-all",
+                  isListening ? "bg-red-500/10 text-red-500 animate-pulse" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                )}
+                title={isListening ? "Listening..." : "Voice Input"}
+              >
+                {isListening ? <MicOff size={18} /> : <Mic size={18} />}
+              </button>
+            </div>
             <button
               onClick={handleSend}
               disabled={isLoading || (!input.trim() && !selectedFile)}
@@ -902,6 +986,7 @@ export default function DeployedChat() {
             </button>
           </div>
         </div>
+      </div>
         
         <div className="mt-4 flex flex-col items-center justify-center gap-1 border-t border-slate-50 pt-4">
           <p className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em]">
@@ -922,10 +1007,10 @@ function QuickLink({ icon, label, href }: { icon: React.ReactNode, label: string
       href={href} 
       target="_blank" 
       rel="noopener noreferrer"
-      className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-100 text-slate-600 hover:border-slate-300 hover:text-slate-900 transition-all shadow-sm shrink-0 group"
+      className="flex items-center gap-2 px-2 sm:px-3 py-1.5 rounded-lg bg-white border border-slate-100 text-slate-600 hover:border-slate-300 hover:text-slate-900 transition-all shadow-sm shrink-0 group"
     >
       <div className="text-slate-400 group-hover:text-slate-900 transition-colors">{icon}</div>
-      <span className="text-[10px] font-black uppercase tracking-widest">{label}</span>
+      <span className="text-[10px] font-black uppercase tracking-widest hidden md:inline">{label}</span>
     </a>
   );
 }

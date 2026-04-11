@@ -5,20 +5,21 @@
   --font-sans: "Poppins", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   
-  --color-vtu-blue: #0A0A0B;
-  --color-vtu-accent: #3B82F6;
-  --color-vtu-border: #27272A;
-  --color-vtu-bg: #09090B;
-  --color-vtu-sidebar: #18181B;
+  --color-vtu-blue: #0f172a;
+  --color-vtu-accent: #2563eb;
+  --color-vtu-border: #1e293b;
+  --color-vtu-bg: #020617;
+  --color-vtu-sidebar: #0f172a;
+  --color-vtu-surface: #1e293b;
 }
 
 @layer base {
   body {
-    @apply font-sans bg-vtu-bg text-zinc-300 antialiased selection:bg-blue-500/30 selection:text-blue-200;
+    @apply font-sans bg-vtu-bg text-slate-300 antialiased selection:bg-blue-500/30 selection:text-blue-200;
   }
   
   h1, h2, h3, h4, h5, h6 {
-    @apply text-zinc-100 font-semibold tracking-tight;
+    @apply text-slate-100 font-semibold tracking-tight;
   }
 }
 
@@ -31,19 +32,19 @@
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  @apply bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors;
+  @apply bg-slate-800 rounded-full hover:bg-slate-700 transition-colors;
 }
 
 .markdown-body table {
-  @apply w-full border-collapse mb-6 overflow-hidden rounded-lg border border-vtu-border bg-zinc-900/50;
+  @apply w-full border-collapse mb-6 overflow-hidden rounded-lg border border-vtu-border bg-slate-900/50;
 }
 
 .markdown-body th {
-  @apply bg-zinc-800/50 text-zinc-100 font-semibold text-[11px] uppercase tracking-wider p-3 text-left border-b border-vtu-border;
+  @apply bg-slate-800/50 text-slate-100 font-semibold text-[11px] uppercase tracking-wider p-3 text-left border-b border-vtu-border;
 }
 
 .markdown-body td {
-  @apply p-3 text-sm text-zinc-400 border-b border-vtu-border/50 hover:bg-zinc-800/30 transition-colors;
+  @apply p-3 text-sm text-slate-400 border-b border-vtu-border/50 hover:bg-slate-800/30 transition-colors;
 }
 
 .markdown-body p {
@@ -51,7 +52,7 @@
 }
 
 .markdown-body strong {
-  @apply text-zinc-100 font-semibold;
+  @apply text-slate-100 font-semibold;
 }
 
 .markdown-body a {
@@ -59,5 +60,5 @@
 }
 
 .code-block-header {
-  @apply flex items-center justify-between px-4 py-2 bg-zinc-800 border-b border-vtu-border rounded-t-lg text-[10px] font-mono text-zinc-400 uppercase tracking-widest;
+  @apply flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-vtu-border rounded-t-lg text-[10px] font-mono text-slate-400 uppercase tracking-widest;
 }
