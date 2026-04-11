@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI, Modality } from "@google/genai";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -9,7 +9,8 @@ import {
   Search, Copy, Check, ExternalLink, 
   BookOpen, Code, Info, GraduationCap, ClipboardList, Globe,
   ThumbsUp, ThumbsDown, Clock,
-  Mic, MicOff, Loader2, Share2, MessageSquare
+  Mic, MicOff, Loader2, Share2, MessageSquare,
+  Volume2, VolumeX, Sparkles
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -76,18 +77,18 @@ const Typewriter = ({ text, speed = 10, onComplete }: { text: string, speed?: nu
             style={vscDarkPlus}
             language={match[1]}
             PreTag="div"
-            className="rounded-xl !bg-slate-900 !p-4 border border-slate-800 overflow-x-auto"
+            className="rounded-xl !bg-vtu-text-main !p-4 border border-vtu-border overflow-x-auto"
             {...props}
           >
             {String(children).replace(/\n$/, '')}
           </SyntaxHighlighter>
         ) : (
-          <code className={cn("bg-slate-100 text-slate-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
+          <code className={cn("bg-vtu-surface text-vtu-accent px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
             {children}
           </code>
         );
       },
-      p: ({ children }) => <p className="mb-3 text-slate-600 font-medium leading-relaxed text-sm">{children}</p>,
+      p: ({ children }) => <p className="mb-3 text-vtu-text-main font-medium leading-relaxed text-sm">{children}</p>,
     }}
   >
     {text}
@@ -113,6 +114,9 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
   const [leadFormError, setLeadFormError] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -193,6 +197,80 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
     };
 
     recognition.start();
+  };
+
+  const stopAudio = () => {
+    if (audioSourceRef.current) {
+      try {
+        audioSourceRef.current.stop();
+      } catch (e) {}
+      audioSourceRef.current = null;
+    }
+    setSpeakingId(null);
+  };
+
+  const playAudio = async (base64Data: string, messageId: string) => {
+    try {
+      const binaryString = atob(base64Data);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      }
+
+      const audioBuffer = await audioContextRef.current.decodeAudioData(bytes.buffer);
+      const source = audioContextRef.current.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContextRef.current.destination);
+      source.onended = () => {
+        setSpeakingId(null);
+      };
+      source.start();
+      audioSourceRef.current = source;
+    } catch (error) {
+      console.error("Playback Error:", error);
+      setSpeakingId(null);
+    }
+  };
+
+  const handleTTS = async (text: string, messageId: string) => {
+    if (speakingId === messageId) {
+      stopAudio();
+      return;
+    }
+
+    stopAudio();
+    setSpeakingId(messageId);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text: `Say clearly: ${text.substring(0, 1000)}` }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: 'Kore' },
+            },
+          },
+        },
+      });
+
+      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (base64Audio) {
+        playAudio(base64Audio, messageId);
+      } else {
+        setSpeakingId(null);
+      }
+    } catch (error) {
+      console.error("TTS Error:", error);
+      setSpeakingId(null);
+    }
   };
 
   const scrollToBottom = () => {
@@ -328,41 +406,37 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
     // Priority 1: Gemini RAG Mode
     if (ragMode && process.env.GEMINI_API_KEY) {
       try {
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ 
-          model: "gemini-2.0-flash-exp",
-          tools: [{ googleSearchRetrieval: {} }] as any
-        });
-
-        const chat = model.startChat({
-          history: messages.slice(-10).map(msg => ({
-            role: msg.role === 'user' ? 'user' : 'model',
-            parts: [{ text: msg.content }]
-          })),
-        });
-
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
         const prompt = `${SYSTEM_PROMPT}\n\n${userContext}\n\nQUERY: ${input}`;
         
-        let result;
+        const history = messages.slice(-10).map(msg => ({
+          role: msg.role === 'user' ? 'user' : 'model',
+          parts: [{ text: msg.content }]
+        }));
+
+        const parts: any[] = [{ text: prompt }];
         if (selectedFile?.type === 'image') {
           const base64Data = selectedFile.data.split(',')[1];
           const mimeType = selectedFile.data.split(';')[0].split(':')[1];
-          result = await model.generateContent([
-            prompt,
-            { inlineData: { data: base64Data, mimeType } }
-          ]);
-        } else {
-          result = await chat.sendMessage(prompt);
+          parts.push({ inlineData: { data: base64Data, mimeType } });
         }
 
-        const responseText = result.response.text();
-        const groundingMetadata = (result.response as any).groundingMetadata;
+        const result = await ai.models.generateContent({
+          model: "gemini-2.0-flash-exp",
+          contents: [...history, { role: 'user', parts }],
+          config: {
+            tools: [{ googleSearchRetrieval: {} }] as any
+          }
+        });
+
+        const responseText = result.text || "I'm sorry, I couldn't process that request.";
+        const groundingMetadata = (result as any).groundingMetadata;
 
         setMessages(prev => prev.map(m => 
           m.id === botMessageId ? { 
             ...m, 
             content: responseText, 
-            isTyping: true,
+            isTyping: false,
             groundingMetadata: groundingMetadata 
           } : m
         ));
@@ -444,34 +518,34 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         if (!process.env.GEMINI_API_KEY) {
           throw new Error("GEMINI_API_KEY is missing. Please check your environment variables.");
         }
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ 
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        const result = await ai.models.generateContentStream({
           model: "gemini-2.0-flash-exp",
-          tools: [{ googleSearchRetrieval: {} }] as any
-        });
-        
-        const result = await model.generateContentStream({
           contents: contents,
-          systemInstruction: `${SYSTEM_PROMPT}\n\n${userContext}`,
+          config: {
+            systemInstruction: `${SYSTEM_PROMPT}\n\n${userContext}`,
+            tools: [{ googleSearchRetrieval: {} }] as any
+          }
         });
 
         let fullText = "";
-        for await (const chunk of result.stream) {
-          const chunkText = chunk.text();
+        let groundingMetadata = null;
+        for await (const chunk of result) {
+          const chunkText = chunk.text;
           fullText += chunkText;
+          if (chunk.candidates?.[0]?.groundingMetadata) {
+            groundingMetadata = chunk.candidates[0].groundingMetadata;
+          }
           setMessages(prev => prev.map(m => 
-            m.id === botMessageId ? { ...m, content: fullText, isTyping: true } : m
+            m.id === botMessageId ? { ...m, content: fullText, isTyping: true, groundingMetadata } : m
           ));
         }
 
-        const response = await result.response;
-        const groundingMetadata = (response as any).groundingMetadata;
-        
         setMessages(prev => prev.map(m => 
           m.id === botMessageId ? { 
             ...m, 
             content: fullText, 
-            isTyping: true,
+            isTyping: false,
             groundingMetadata: groundingMetadata 
           } : m
         ));
@@ -524,83 +598,83 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
 
   return (
     <div className={cn(
-      "flex flex-col max-w-6xl mx-auto bg-white overflow-hidden relative",
+      "flex flex-col max-w-6xl mx-auto bg-vtu-bg overflow-hidden relative",
       isWidget 
         ? "h-full w-full rounded-none border-none shadow-none" 
-        : "h-[calc(100vh-220px)] sm:h-[calc(100vh-180px)] rounded-2xl sm:rounded-3xl shadow-xl border border-slate-100"
+        : "h-[calc(100vh-220px)] sm:h-[calc(100vh-180px)] rounded-2xl sm:rounded-3xl shadow-xl border border-vtu-border bg-gradient-to-br from-vtu-bg via-white to-vtu-bg/50"
     )}>
       {/* PDF Modal */}
       {viewingPdf && <PDFModal fileUrl={viewingPdf} onClose={() => setViewingPdf(null)} />}
 
       {/* Lead Capture Overlay */}
       {!isLeadCaptured && (
-        <div className="absolute inset-0 z-50 bg-slate-900/10 backdrop-blur-md flex items-center justify-center p-4">
+        <div className="absolute inset-0 z-50 bg-vtu-text-main/5 backdrop-blur-sm flex items-center justify-center p-4">
           <motion.div 
             initial={{ scale: 0.95, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="bg-white rounded-[32px] shadow-2xl w-full max-w-md overflow-hidden border border-slate-100"
+            className="bg-vtu-bg rounded-[32px] shadow-2xl w-full max-w-md overflow-hidden border border-vtu-border"
           >
-            <div className="bg-slate-900 p-8 text-white text-center">
-              <div className="bg-white/10 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <div className="bg-vtu-surface p-8 text-center border-b border-vtu-border">
+              <div className="bg-vtu-accent/10 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 text-vtu-accent">
                 <GraduationCap size={32} />
               </div>
-              <h2 className="text-2xl font-black tracking-tight mb-2">Hi! VTU Intelligence</h2>
-              <p className="text-slate-400 text-sm font-medium">Kindly provide your Name, Phone, and Email ID to start.</p>
+              <h2 className="text-2xl font-black tracking-tight mb-2 text-vtu-text-main">VTU Intelligence</h2>
+              <p className="text-vtu-text-muted text-sm font-medium">Kindly provide your details to start the session.</p>
             </div>
             
             <form onSubmit={handleLeadSubmit} className="p-8 space-y-4">
               <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Full Name</label>
+                <label className="text-[10px] font-black uppercase tracking-widest text-vtu-text-muted ml-1">Full Name</label>
                 <div className="relative">
-                  <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <User className="absolute left-4 top-1/2 -translate-y-1/2 text-vtu-text-dim" size={18} />
                   <input 
                     type="text" 
                     required
                     value={userData.name}
                     onChange={(e) => setUserData({...userData, name: e.target.value})}
                     placeholder="John Doe"
-                    className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-100 rounded-xl focus:ring-4 focus:ring-slate-50 focus:border-slate-300 outline-none transition-all font-medium text-slate-800"
+                    className="w-full pl-12 pr-4 py-3.5 bg-vtu-bg border border-vtu-border rounded-xl focus:ring-4 focus:ring-vtu-accent/10 focus:border-vtu-accent outline-none transition-all font-medium text-vtu-text-main"
                   />
                 </div>
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Phone Number</label>
+                <label className="text-[10px] font-black uppercase tracking-widest text-vtu-text-muted ml-1">Phone Number</label>
                 <div className="relative">
-                  <ClipboardList className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <ClipboardList className="absolute left-4 top-1/2 -translate-y-1/2 text-vtu-text-dim" size={18} />
                   <input 
                     type="tel" 
                     required
                     value={userData.phone}
                     onChange={(e) => setUserData({...userData, phone: e.target.value})}
                     placeholder="+91 98765 43210"
-                    className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-100 rounded-xl focus:ring-4 focus:ring-slate-50 focus:border-slate-300 outline-none transition-all font-medium text-slate-800"
+                    className="w-full pl-12 pr-4 py-3.5 bg-vtu-bg border border-vtu-border rounded-xl focus:ring-4 focus:ring-vtu-accent/10 focus:border-vtu-accent outline-none transition-all font-medium text-vtu-text-main"
                   />
                 </div>
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">University Email</label>
+                <label className="text-[10px] font-black uppercase tracking-widest text-vtu-text-muted ml-1">University Email</label>
                 <div className="relative">
-                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-vtu-text-dim" size={18} />
                   <input 
                     type="email" 
                     required
                     value={userData.email}
                     onChange={(e) => setUserData({...userData, email: e.target.value})}
                     placeholder="student@vtu.ac.in"
-                    className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-100 rounded-xl focus:ring-4 focus:ring-slate-50 focus:border-slate-300 outline-none transition-all font-medium text-slate-800"
+                    className="w-full pl-12 pr-4 py-3.5 bg-vtu-bg border border-vtu-border rounded-xl focus:ring-4 focus:ring-vtu-accent/10 focus:border-vtu-accent outline-none transition-all font-medium text-vtu-text-main"
                   />
                 </div>
               </div>
 
               {leadFormError && (
-                <p className="text-red-500 text-xs font-bold text-center">{leadFormError}</p>
+                <p className="text-red-600 text-xs font-bold text-center">{leadFormError}</p>
               )}
 
               <button 
                 type="submit"
-                className="w-full py-4 bg-slate-900 text-white rounded-xl font-black text-sm uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-slate-200 mt-4"
+                className="w-full py-4 bg-vtu-accent text-white rounded-xl font-black text-sm uppercase tracking-widest hover:bg-vtu-accent-hover transition-all shadow-lg shadow-vtu-accent/20 mt-4"
               >
                 Start Session
               </button>
@@ -610,19 +684,22 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       )}
 
       {/* Top Bar / Quick Links */}
-      <div className="bg-white border-b border-slate-100 px-4 sm:px-6 py-3 flex items-center justify-between shrink-0">
+      <div className="bg-vtu-bg border-b border-vtu-border px-4 sm:px-6 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
-          <div className="bg-slate-900 p-2 rounded-xl text-white">
+          <div className="bg-vtu-accent/10 p-2 rounded-xl text-vtu-accent relative group">
             <GraduationCap size={20} />
+            <Sparkles size={10} className="absolute -top-1 -right-1 text-vtu-accent animate-pulse" />
           </div>
           <div>
-            <h3 className="font-black text-slate-900 tracking-tight text-sm sm:text-base">VTU Intelligence</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="font-black text-vtu-text-main tracking-tight text-sm sm:text-base">VTU Intelligence</h3>
+            </div>
             <div className="flex items-center gap-2">
               <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+              <span className="text-[9px] font-black uppercase tracking-widest text-vtu-text-dim flex items-center gap-2">
                 {isLeadCaptured ? `Active: ${userData.name}` : 'Awaiting Verification'}
                 {ragMode && (
-                  <span className="bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded text-[7px] border border-indigo-100 font-black">
+                  <span className="bg-vtu-accent/10 text-vtu-accent px-1.5 py-0.5 rounded text-[7px] border border-vtu-accent/20 font-black">
                     RAG ACTIVE
                   </span>
                 )}
@@ -632,12 +709,12 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         </div>
         <div className="flex items-center gap-2 sm:gap-4">
           {isLeadCaptured && (
-            <div className="flex items-center bg-slate-50 border border-slate-100 rounded-xl p-1 gap-1">
+            <div className="flex items-center bg-vtu-bg border border-vtu-border rounded-xl p-1 gap-1">
               <button 
                 onClick={() => setRagMode(false)}
                 className={cn(
                   "px-2 sm:px-3 py-1 rounded-lg text-[8px] sm:text-[10px] font-black uppercase tracking-widest transition-all",
-                  !ragMode ? "bg-white text-slate-900 shadow-sm border border-slate-200" : "text-slate-400 hover:text-slate-600"
+                  !ragMode ? "bg-vtu-surface text-vtu-text-main shadow-sm border border-vtu-border" : "text-vtu-text-muted hover:text-vtu-text-main"
                 )}
               >
                 Standard
@@ -646,7 +723,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                 onClick={() => setRagMode(true)}
                 className={cn(
                   "px-2 sm:px-3 py-1 rounded-lg text-[8px] sm:text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5",
-                  ragMode ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "text-slate-400 hover:text-slate-600"
+                  ragMode ? "bg-vtu-accent text-white shadow-md shadow-vtu-accent/20" : "text-vtu-text-muted hover:text-vtu-text-main"
                 )}
               >
                 <Search size={10} />
@@ -657,7 +734,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
           {isLeadCaptured && (
             <button 
               onClick={clearChat}
-              className="p-2 hover:bg-slate-50 rounded-lg transition-colors text-slate-400 hover:text-red-500"
+              className="p-2 hover:bg-vtu-bg rounded-lg transition-colors text-vtu-text-muted hover:text-red-600"
               title="Clear History"
             >
               <Trash2 size={16} />
@@ -671,7 +748,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
       </div>
 
       <div className={cn(
-        "flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent bg-white",
+        "flex-1 overflow-y-auto no-scrollbar bg-vtu-bg",
         isWidget ? "p-4 space-y-6" : "p-4 sm:p-8 space-y-8 sm:space-y-10"
       )}>
         {messages.length === 0 && (
@@ -683,19 +760,19 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               initial={{ scale: 0.8, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               className={cn(
-                "bg-slate-900 rounded-[32px] shadow-xl p-6",
+                "bg-vtu-accent/10 rounded-[32px] p-6 text-vtu-accent",
                 isWidget ? "p-4" : "sm:p-10 sm:rounded-[48px]"
               )}
             >
-              <GraduationCap className="text-white" size={isWidget ? 32 : 48} />
+              <GraduationCap size={isWidget ? 32 : 48} />
             </motion.div>
             <div className="space-y-2">
               <h3 className={cn(
-                "font-black text-slate-900 tracking-tight",
+                "font-black text-vtu-text-main tracking-tight",
                 isWidget ? "text-xl" : "text-3xl sm:text-4xl"
               )}>VTU Intelligence</h3>
               <p className={cn(
-                "text-slate-400 font-medium leading-relaxed mx-auto px-4",
+                "text-vtu-text-muted font-medium leading-relaxed mx-auto px-4",
                 isWidget ? "text-xs" : "text-sm sm:text-lg max-w-xl"
               )}>
                 Official Academic Concierge
@@ -745,9 +822,9 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               <React.Fragment key={msg.id}>
                 {showSeparator && (
                   <div className="flex items-center gap-4 max-w-4xl mx-auto py-2">
-                    <div className="h-[1px] flex-1 bg-slate-100" />
-                    <span className="text-[8px] font-black uppercase tracking-[0.3em] text-slate-300">New Response</span>
-                    <div className="h-[1px] flex-1 bg-slate-100" />
+                    <div className="h-[1px] flex-1 bg-vtu-border" />
+                    <span className="text-[8px] font-black uppercase tracking-[0.3em] text-vtu-text-dim">New Response</span>
+                    <div className="h-[1px] flex-1 bg-vtu-border" />
                   </div>
                 )}
                 <motion.div
@@ -759,10 +836,10 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                   )}
                 >
               <div className={cn(
-                "w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 border mt-1",
-                msg.role === 'user' ? "bg-slate-900 border-slate-900" : "bg-slate-50 border-slate-100"
+                "w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 border mt-1 shadow-inner",
+                msg.role === 'user' ? "bg-vtu-accent border-vtu-accent shadow-vtu-accent/20" : "bg-vtu-surface border-vtu-border"
               )}>
-                {msg.role === 'user' ? <User size={14} className="text-white" /> : <Bot size={14} className="text-slate-400" />}
+                {msg.role === 'user' ? <User size={14} className="text-white" /> : <Bot size={14} className="text-vtu-accent" />}
               </div>
               
               <div className={cn(
@@ -770,10 +847,10 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                 msg.role === 'user' ? "items-end" : "items-start"
               )}>
                 <div className={cn(
-                  "rounded-2xl p-4 sm:p-5 text-left shadow-sm",
+                  "rounded-2xl p-4 sm:p-5 text-left transition-all duration-300",
                   msg.role === 'user' 
-                    ? "bg-slate-900 text-white rounded-tr-none font-medium" 
-                    : "bg-slate-50 text-slate-800 rounded-tl-none border border-slate-100"
+                    ? "bg-vtu-accent text-white rounded-tr-none font-medium shadow-lg shadow-vtu-accent/10" 
+                    : "glass rounded-tl-none border border-vtu-border/50 text-vtu-text-main"
                 )}>
                   {msg.image && (
                     <img 
@@ -785,33 +862,33 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                   )}
                   
                   {msg.pdf && (
-                    <div className="mb-4 sm:mb-6 p-3 sm:p-5 bg-blue-50 rounded-xl sm:rounded-2xl border border-blue-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-6">
+                    <div className="mb-4 sm:mb-6 p-3 sm:p-5 bg-vtu-accent/5 rounded-xl sm:rounded-2xl border border-vtu-accent/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-6">
                       <div className="flex items-center gap-3 sm:gap-4 overflow-hidden">
-                        <div className="bg-red-50 p-2 sm:p-3 rounded-lg sm:rounded-xl">
-                          <FileText className="text-red-600 w-5 h-5 sm:w-7 sm:h-7" />
+                        <div className="bg-vtu-accent/10 p-2 sm:p-3 rounded-lg sm:rounded-xl">
+                          <FileText className="text-vtu-accent w-5 h-5 sm:w-7 sm:h-7" />
                         </div>
                         <div className="overflow-hidden">
-                          <p className="text-sm sm:text-base font-black text-slate-900 truncate">{msg.pdf.name}</p>
-                          <p className="text-[8px] sm:text-[10px] text-blue-500 font-black uppercase tracking-widest">Official VTU Document</p>
+                          <p className="text-sm sm:text-base font-black text-vtu-text-main truncate">{msg.pdf.name}</p>
+                          <p className="text-[8px] sm:text-[10px] text-vtu-accent font-black uppercase tracking-widest">Official VTU Document</p>
                         </div>
                       </div>
                       <button 
                         onClick={() => setViewingPdf(msg.pdf!.url)}
-                        className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-blue-600 text-white rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-black hover:bg-black transition-all shadow-xl shrink-0"
+                        className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-vtu-accent text-white rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-black hover:bg-vtu-accent-hover transition-all shadow-lg shadow-vtu-accent/20 shrink-0"
                       >
                         <Eye className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> VIEW
                       </button>
                     </div>
                   )}
 
-                  <div className="markdown-container prose prose-slate prose-sm sm:prose-base max-w-none leading-relaxed">
+                  <div className="markdown-container prose prose-neutral prose-sm sm:prose-base max-w-none leading-relaxed">
                     {msg.reasoning_details && (
-                      <div className="mb-4 p-3 sm:p-4 bg-white/50 rounded-xl border border-slate-200">
+                      <div className="mb-4 p-3 sm:p-4 bg-vtu-surface/50 rounded-xl border border-vtu-border">
                         <div className="flex items-center gap-2 mb-1">
-                          <BookOpen size={12} className="text-slate-400" />
-                          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Reasoning</p>
+                          <BookOpen size={12} className="text-vtu-text-dim" />
+                          <p className="text-[8px] font-black uppercase tracking-widest text-vtu-text-dim">Reasoning</p>
                         </div>
-                        <div className="text-xs text-slate-500 italic">
+                        <div className="text-xs text-vtu-text-muted italic">
                           {msg.reasoning_details}
                         </div>
                       </div>
@@ -835,7 +912,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                                       <div className="absolute right-2 top-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
                                         <button 
                                           onClick={() => copyToClipboard(String(children), msg.id + '-code')}
-                                          className="p-1.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700"
+                                          className="p-1.5 bg-vtu-accent text-white rounded-lg hover:bg-vtu-accent-hover"
                                         >
                                           {copiedId === msg.id + '-code' ? <Check size={12} /> : <Copy size={12} />}
                                         </button>
@@ -844,35 +921,35 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                                         style={vscDarkPlus}
                                         language={match[1]}
                                         PreTag="div"
-                                        className="rounded-xl !bg-slate-900 !p-4 border border-slate-800 overflow-x-auto"
+                                        className="rounded-xl !bg-vtu-text-main !p-4 border border-vtu-border overflow-x-auto"
                                         {...props}
                                       >
                                         {String(children).replace(/\n$/, '')}
                                       </SyntaxHighlighter>
                                     </div>
                                   ) : (
-                                    <code className={cn("bg-slate-100 text-slate-900 px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
+                                    <code className={cn("bg-vtu-surface text-vtu-accent px-1 py-0.5 rounded font-mono text-[10px] sm:text-sm", className)} {...props}>
                                       {children}
                                     </code>
                                   );
                                 },
                                 table: ({ children }) => (
-                                  <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 bg-white shadow-sm">
+                                  <div className="overflow-x-auto my-4 rounded-xl border border-vtu-border bg-white shadow-sm">
                                     <table className="min-w-full border-collapse">
                                       {children}
                                     </table>
                                   </div>
                                 ),
-                                thead: ({ children }) => <thead className="bg-slate-50 border-b border-slate-100">{children}</thead>,
-                                th: ({ children }) => <th className="px-4 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">{children}</th>,
-                                tr: ({ children }) => <tr className="hover:bg-slate-50/50 transition-colors">{children}</tr>,
-                                td: ({ children }) => <td className="px-4 py-3 text-xs sm:text-sm text-slate-600 border-t border-slate-50">{children}</td>,
-                                strong: ({ children }) => <strong className="text-slate-900 font-bold">{children}</strong>,
-                                h1: ({ children }) => <h1 className="text-lg sm:text-xl font-black text-slate-900 mb-3 tracking-tight">{children}</h1>,
-                                h2: ({ children }) => <h2 className="text-base sm:text-lg font-black text-slate-900 mb-2 tracking-tight">{children}</h2>,
-                                p: ({ children }) => <p className="mb-3 text-slate-600 font-medium leading-relaxed text-sm last:mb-0">{children}</p>,
-                                ul: ({ children }) => <ul className="list-disc pl-5 mb-4 space-y-1 text-slate-600 text-sm">{children}</ul>,
-                                ol: ({ children }) => <ol className="list-decimal pl-5 mb-4 space-y-1 text-slate-600 text-sm">{children}</ol>,
+                                thead: ({ children }) => <thead className="bg-vtu-surface border-b border-vtu-border">{children}</thead>,
+                                th: ({ children }) => <th className="px-4 py-3 text-left text-[9px] font-black text-vtu-text-dim uppercase tracking-widest">{children}</th>,
+                                tr: ({ children }) => <tr className="hover:bg-vtu-surface/50 transition-colors">{children}</tr>,
+                                td: ({ children }) => <td className="px-4 py-3 text-xs sm:text-sm text-vtu-text-main border-t border-vtu-border">{children}</td>,
+                                strong: ({ children }) => <strong className="text-vtu-text-main font-bold">{children}</strong>,
+                                h1: ({ children }) => <h1 className="text-lg sm:text-xl font-black text-vtu-text-main mb-3 tracking-tight">{children}</h1>,
+                                h2: ({ children }) => <h2 className="text-base sm:text-lg font-black text-vtu-text-main mb-2 tracking-tight">{children}</h2>,
+                                p: ({ children }) => <p className="mb-3 text-vtu-text-main font-medium leading-relaxed text-sm last:mb-0">{children}</p>,
+                                ul: ({ children }) => <ul className="list-disc pl-5 mb-4 space-y-1 text-vtu-text-main text-sm">{children}</ul>,
+                                ol: ({ children }) => <ol className="list-decimal pl-5 mb-4 space-y-1 text-vtu-text-main text-sm">{children}</ol>,
                                 li: ({ children }) => <li className="leading-relaxed">{children}</li>,
                               }}
                             >
@@ -883,7 +960,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                               <div className="absolute top-0 -right-12 opacity-0 group-hover/msg:opacity-100 transition-opacity">
                                 <button 
                                   onClick={() => copyToClipboard(msg.content, msg.id)}
-                                  className="p-2 bg-white border border-slate-100 text-slate-400 rounded-xl hover:text-slate-900 hover:border-slate-300 shadow-sm"
+                                  className="p-2 bg-vtu-surface border border-vtu-border text-vtu-text-dim rounded-xl hover:text-vtu-text-main hover:border-vtu-accent shadow-sm"
                                   title="Copy message"
                                 >
                                   {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
@@ -901,7 +978,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                                 href={link}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-[10px] sm:text-xs font-black hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 group/btn"
+                                className="flex items-center gap-2 px-4 py-2 bg-vtu-accent text-white rounded-xl text-[10px] sm:text-xs font-black hover:bg-vtu-accent-hover transition-all shadow-lg shadow-vtu-accent/10 group/btn"
                               >
                                 <FileText size={14} className="group-hover:scale-110 transition-transform" />
                                 DOWNLOAD CIRCULAR (PDF)
@@ -912,10 +989,10 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                   </div>
                   
                   {msg.groundingMetadata?.groundingChunks && (
-                    <div className="mt-6 sm:mt-8 pt-4 sm:pt-6 border-t border-slate-100">
+                    <div className="mt-6 sm:mt-8 pt-4 sm:pt-6 border-t border-vtu-border">
                       <div className="flex items-center gap-2 mb-3 sm:mb-4">
-                        <Search size={12} className="text-blue-400" />
-                        <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.3em] text-blue-400">Verified Grounding Sources</p>
+                        <Search size={12} className="text-vtu-accent" />
+                        <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.3em] text-vtu-accent">Verified Grounding Sources</p>
                       </div>
                       <div className="flex flex-wrap gap-2 sm:gap-3">
                         {msg.groundingMetadata.groundingChunks.map((chunk: any, i: number) => (
@@ -925,7 +1002,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                               href={chunk.web.uri} 
                               target="_blank" 
                               rel="noopener noreferrer"
-                              className="text-[8px] sm:text-[10px] bg-white hover:bg-blue-50 px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg sm:rounded-xl border border-slate-200 text-slate-600 font-black transition-all flex items-center gap-1.5 sm:gap-2 shadow-sm hover:border-blue-300 hover:text-blue-700"
+                              className="text-[8px] sm:text-[10px] bg-vtu-surface hover:bg-vtu-bg px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg sm:rounded-xl border border-vtu-border text-vtu-text-muted font-black transition-all flex items-center gap-1.5 sm:gap-2 shadow-sm hover:border-vtu-accent hover:text-vtu-accent"
                             >
                               <ExternalLink size={10} /> {chunk.web.title || "VTU Portal"}
                             </a>
@@ -941,11 +1018,11 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                       msg.role === 'user' ? "flex-row-reverse" : "flex-row"
                     )}>
                       <div className="flex items-center gap-2">
-                        <p className="text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        <p className="text-[8px] sm:text-[10px] font-black text-vtu-text-muted uppercase tracking-widest">
                           {msg.role === 'user' ? 'Student Query' : 'Intelligence Core'}
                         </p>
-                        <span className="w-1 h-1 bg-slate-300 rounded-full" />
-                        <p className="text-[8px] sm:text-[10px] font-bold text-slate-300 flex items-center gap-1">
+                        <span className="w-1 h-1 bg-vtu-border rounded-full" />
+                        <p className="text-[8px] sm:text-[10px] font-bold text-vtu-text-dim flex items-center gap-1">
                           <Clock size={8} />
                           {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </p>
@@ -954,10 +1031,21 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                       {msg.role === 'bot' && msg.content && !msg.isTyping && (
                         <div className="flex items-center gap-1 ml-auto">
                           <button 
+                            onClick={() => handleTTS(msg.content, msg.id)}
+                            className={cn(
+                              "p-1.5 rounded-md transition-all hover:bg-vtu-bg flex items-center gap-1",
+                              speakingId === msg.id ? "text-vtu-accent bg-vtu-accent/10 animate-pulse" : "text-vtu-text-dim"
+                            )}
+                            title="Speak message"
+                          >
+                            {speakingId === msg.id ? <VolumeX size={12} /> : <Volume2 size={12} />}
+                          </button>
+                          <div className="w-[1px] h-3 bg-vtu-border mx-0.5" />
+                          <button 
                             onClick={() => handleFeedback(msg.id, 'up')}
                             className={cn(
-                              "p-1 rounded-md transition-colors hover:bg-slate-100",
-                              msg.feedback === 'up' ? "text-green-500 bg-green-50" : "text-slate-300"
+                              "p-1 rounded-md transition-colors hover:bg-vtu-bg",
+                              msg.feedback === 'up' ? "text-green-600 bg-green-50" : "text-vtu-text-dim"
                             )}
                           >
                             <ThumbsUp size={12} />
@@ -965,15 +1053,15 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                           <button 
                             onClick={() => handleFeedback(msg.id, 'down')}
                             className={cn(
-                              "p-1 rounded-md transition-colors hover:bg-slate-100",
-                              msg.feedback === 'down' ? "text-red-500 bg-red-50" : "text-slate-300"
+                              "p-1 rounded-md transition-colors hover:bg-vtu-bg",
+                              msg.feedback === 'down' ? "text-red-600 bg-red-50" : "text-vtu-text-dim"
                             )}
                           >
                             <ThumbsDown size={12} />
                           </button>
                           <button 
                             onClick={() => copyToClipboard(msg.content, msg.id)}
-                            className="p-1 text-slate-300 hover:text-indigo-600 transition-colors ml-1"
+                            className="p-1 text-vtu-text-dim hover:text-vtu-accent transition-colors ml-1"
                           >
                             {copiedId === msg.id ? <Check size={10} /> : <Copy size={10} />}
                           </button>
@@ -989,17 +1077,17 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         
         {isLoading && !messages[messages.length - 1]?.content && (
           <div className="flex gap-3 sm:gap-4 max-w-4xl mx-auto">
-            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center shrink-0">
-              <Bot size={14} className="text-slate-400" />
+            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-vtu-surface border border-vtu-border flex items-center justify-center shrink-0">
+              <Bot size={14} className="text-vtu-text-dim" />
             </div>
-            <div className="bg-slate-50 rounded-2xl p-4 rounded-tl-none border border-slate-100 flex items-center gap-3 shadow-sm">
+            <div className="bg-vtu-surface rounded-2xl p-4 rounded-tl-none border border-vtu-border flex items-center gap-3 shadow-sm">
               <div className="flex gap-1">
                 {[0, 1, 2].map(i => (
                   <motion.div 
                     key={i}
                     animate={{ y: [0, -4, 0] }} 
                     transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1 }}
-                    className="w-1 h-1 bg-slate-400 rounded-full" 
+                    className="w-1 h-1 bg-vtu-text-dim rounded-full" 
                   />
                 ))}
               </div>
@@ -1011,7 +1099,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
 
       {/* Input Area */}
       <div className={cn(
-        "bg-white border-t border-slate-50",
+        "bg-vtu-surface border-t border-vtu-border",
         isWidget ? "p-3" : "p-4 sm:p-6"
       )}>
         <div className="max-w-4xl mx-auto space-y-4">
@@ -1020,7 +1108,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               <button 
                 onClick={() => shareTranscript('email')}
                 disabled={isSendingEmail}
-                className="flex items-center gap-2 px-4 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border border-slate-100 disabled:opacity-50"
+                className="flex items-center gap-2 px-4 py-2 bg-vtu-bg hover:bg-vtu-surface text-vtu-text-muted rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border border-vtu-border disabled:opacity-50"
               >
                 {isSendingEmail ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />} 
                 Email Transcript
@@ -1043,23 +1131,23 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                 src={selectedFile.data} 
                 alt="Preview" 
                 className={cn(
-                  "object-cover rounded-xl border border-slate-200 shadow-lg",
+                  "object-cover rounded-xl border border-vtu-border shadow-lg",
                   isWidget ? "h-10 w-10" : "h-16 w-16 sm:h-24 sm:w-24"
                 )}
                 referrerPolicy="no-referrer"
               />
             ) : (
               <div className={cn(
-                "bg-slate-50 rounded-xl border border-slate-200 shadow-lg flex flex-col items-center justify-center text-center",
+                "bg-vtu-bg rounded-xl border border-vtu-border shadow-lg flex flex-col items-center justify-center text-center",
                 isWidget ? "h-10 w-10 p-1" : "h-16 w-16 sm:h-24 sm:w-24 p-2"
               )}>
-                <FileText className="text-slate-400 mb-1 w-4 h-4 sm:w-6 sm:h-6" />
-                <p className="text-[6px] font-black text-slate-600 truncate w-full">{selectedFile.name}</p>
+                <FileText className="text-vtu-text-dim mb-1 w-4 h-4 sm:w-6 sm:h-6" />
+                <p className="text-[6px] font-black text-vtu-text-muted truncate w-full">{selectedFile.name}</p>
               </div>
             )}
             <button 
               onClick={clearFile}
-              className="absolute -top-1 -right-1 bg-slate-900 text-white rounded-full p-1 shadow-lg hover:bg-black transition-all"
+              className="absolute -top-1 -right-1 bg-vtu-accent text-white rounded-full p-1 shadow-lg hover:bg-vtu-accent-hover transition-all"
             >
               <Trash2 className="w-2 h-2 sm:w-3 sm:h-3" />
             </button>
@@ -1070,7 +1158,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
           <button 
             onClick={() => fileInputRef.current?.click()}
             className={cn(
-              "rounded-xl bg-slate-50 border border-slate-100 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-all shrink-0",
+              "rounded-xl bg-vtu-bg border border-vtu-border text-vtu-text-dim hover:bg-vtu-surface hover:text-vtu-text-muted transition-all shrink-0",
               isWidget ? "p-2" : "p-3 sm:p-4"
             )}
           >
@@ -1096,7 +1184,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               }}
               placeholder="Type a message..."
               className={cn(
-                "w-full rounded-2xl border border-slate-100 focus:ring-4 focus:ring-slate-50 focus:border-slate-200 focus:outline-none resize-none bg-slate-50/50 font-medium text-slate-800 placeholder:text-slate-400",
+                "w-full rounded-2xl border border-vtu-border focus:ring-4 focus:ring-vtu-accent/5 focus:border-vtu-accent focus:outline-none resize-none bg-vtu-bg font-medium text-vtu-text-main placeholder:text-vtu-text-dim",
                 isWidget ? "p-2 pr-10 text-xs min-h-[40px] max-h-24" : "p-3 sm:p-4 pr-12 sm:pr-16 text-sm min-h-[48px] max-h-32"
               )}
               rows={1}
@@ -1106,7 +1194,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
                 onClick={toggleVoiceInput}
                 className={cn(
                   "p-1.5 rounded-lg transition-all",
-                  isListening ? "bg-red-500/10 text-red-500 animate-pulse" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                  isListening ? "bg-red-600/10 text-red-600 animate-pulse" : "text-vtu-text-dim hover:text-vtu-text-main hover:bg-vtu-bg"
                 )}
                 title={isListening ? "Listening..." : "Voice Input"}
               >
@@ -1117,7 +1205,7 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
               onClick={handleSend}
               disabled={isLoading || (!input.trim() && !selectedFile)}
               className={cn(
-                "absolute bg-slate-900 text-white hover:bg-black disabled:opacity-20 disabled:cursor-not-allowed transition-all shadow-sm",
+                "absolute bg-vtu-accent text-white hover:bg-vtu-accent-hover disabled:opacity-20 disabled:cursor-not-allowed transition-all shadow-lg shadow-vtu-accent/20",
                 isWidget ? "right-1.5 bottom-1.5 p-1.5 rounded-lg" : "right-2 bottom-2 p-2 sm:p-2.5 rounded-xl"
               )}
             >
@@ -1127,11 +1215,11 @@ export default function ChatInterface({ isWidget = false }: ChatInterfaceProps) 
         </div>
       </div>
         
-      <div className="mt-4 flex flex-col items-center justify-center gap-1 border-t border-slate-50 pt-4">
-          <p className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em]">
+      <div className="mt-4 flex flex-col items-center justify-center gap-1 border-t border-vtu-border pt-4">
+          <p className="text-[9px] font-black text-vtu-text-dim uppercase tracking-[0.2em]">
             © 2026 VTU Intelligence Core
           </p>
-          <p className="text-[8px] font-bold text-slate-400">
+          <p className="text-[8px] font-bold text-vtu-text-dim">
             Built by Surya Prakash
           </p>
         </div>
@@ -1146,9 +1234,9 @@ function QuickLink({ icon, label, href }: { icon: React.ReactNode, label: string
       href={href} 
       target="_blank" 
       rel="noopener noreferrer"
-      className="flex items-center gap-1.5 sm:gap-2 px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:border-blue-300 hover:text-blue-900 transition-all shadow-sm shrink-0 group"
+      className="flex items-center gap-1.5 sm:gap-2 px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg bg-vtu-surface border border-vtu-border text-vtu-text-muted hover:border-vtu-accent hover:text-vtu-accent transition-all shadow-sm shrink-0 group"
     >
-      <div className="text-slate-400 group-hover:text-blue-600 transition-colors">{icon}</div>
+      <div className="text-vtu-text-dim group-hover:text-vtu-accent transition-colors">{icon}</div>
       <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest hidden md:inline">{label}</span>
     </a>
   );
@@ -1159,22 +1247,22 @@ function SuggestionCard({ icon, title, desc, onClick, isWidget }: { icon: React.
     <button 
       onClick={onClick}
       className={cn(
-        "flex flex-col items-start rounded-2xl bg-white border border-slate-100 text-left hover:border-blue-400 hover:shadow-xl transition-all group",
+        "flex flex-col items-start rounded-2xl bg-vtu-surface border border-vtu-border text-left hover:border-vtu-accent hover:shadow-xl transition-all group",
         isWidget ? "p-3" : "p-4 sm:p-6 sm:rounded-3xl"
       )}
     >
       <div className={cn(
-        "bg-slate-50 rounded-lg text-slate-400 group-hover:bg-blue-50 group-hover:text-blue-600 transition-all",
+        "bg-vtu-bg rounded-lg text-vtu-text-dim group-hover:bg-vtu-accent/10 group-hover:text-vtu-accent transition-all",
         isWidget ? "p-1.5 mb-2" : "p-2 sm:p-3 sm:rounded-xl mb-3 sm:mb-4"
       )}>
         {icon}
       </div>
       <h4 className={cn(
-        "font-black text-blue-900 tracking-tight font-display",
+        "font-black text-vtu-text-main tracking-tight font-display",
         isWidget ? "text-[10px] mb-0.5" : "text-xs sm:text-sm mb-1"
       )}>{title}</h4>
       <p className={cn(
-        "text-slate-400 font-bold leading-relaxed",
+        "text-vtu-text-muted font-bold leading-relaxed",
         isWidget ? "text-[8px]" : "text-[8px] sm:text-[10px]"
       )}>{desc}</p>
     </button>

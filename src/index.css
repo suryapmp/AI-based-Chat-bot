@@ -5,21 +5,40 @@
   --font-sans: "Poppins", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   
-  --color-vtu-blue: #0f172a;
-  --color-vtu-accent: #2563eb;
-  --color-vtu-border: #1e293b;
-  --color-vtu-bg: #020617;
-  --color-vtu-sidebar: #0f172a;
-  --color-vtu-surface: #1e293b;
+  --color-vtu-primary: #7F7385; /* Dull Mauve */
+  --color-vtu-accent: #B8ACC0;  /* Virtuous Violet */
+  --color-vtu-accent-hover: #7F7385; /* Dull Mauve */
+  --color-vtu-border: #D5D5D5;  /* Disco Ball */
+  --color-vtu-bg: #EFEFEF;      /* Crystal Bell */
+  --color-vtu-surface: #FEFEFE; /* White as Heaven */
+  --color-vtu-text-main: #333333; /* Dark Gray/Black */
+  --color-vtu-text-muted: #7F7385; /* Dull Mauve */
+  --color-vtu-text-dim: #B8ACC0;   /* Virtuous Violet */
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .glass {
+    @apply bg-white/70 backdrop-blur-md border border-white/20 shadow-lg;
+  }
+  .glass-dark {
+    @apply bg-black/5 backdrop-blur-md border border-black/5 shadow-lg;
+  }
 }
 
 @layer base {
   body {
-    @apply font-sans bg-vtu-bg text-slate-300 antialiased selection:bg-blue-500/30 selection:text-blue-200;
+    @apply font-sans bg-vtu-bg text-vtu-text-main antialiased selection:bg-vtu-accent/10 selection:text-vtu-accent;
   }
   
   h1, h2, h3, h4, h5, h6 {
-    @apply text-slate-100 font-semibold tracking-tight;
+    @apply text-vtu-text-main font-bold tracking-tight;
   }
 }
 
@@ -32,19 +51,19 @@
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  @apply bg-slate-800 rounded-full hover:bg-slate-700 transition-colors;
+  @apply bg-vtu-border rounded-full hover:bg-vtu-text-muted transition-colors;
 }
 
 .markdown-body table {
-  @apply w-full border-collapse mb-6 overflow-hidden rounded-lg border border-vtu-border bg-slate-900/50;
+  @apply w-full border-collapse mb-6 overflow-hidden rounded-lg border border-vtu-border bg-vtu-surface;
 }
 
 .markdown-body th {
-  @apply bg-slate-800/50 text-slate-100 font-semibold text-[11px] uppercase tracking-wider p-3 text-left border-b border-vtu-border;
+  @apply bg-vtu-bg text-vtu-text-dim font-semibold text-[11px] uppercase tracking-wider p-3 text-left border-b border-vtu-border;
 }
 
 .markdown-body td {
-  @apply p-3 text-sm text-slate-400 border-b border-vtu-border/50 hover:bg-slate-800/30 transition-colors;
+  @apply p-3 text-sm text-vtu-text-muted border-b border-vtu-border/50 hover:bg-vtu-bg transition-colors;
 }
 
 .markdown-body p {
@@ -52,13 +71,13 @@
 }
 
 .markdown-body strong {
-  @apply text-slate-100 font-semibold;
+  @apply text-vtu-text-main font-semibold;
 }
 
 .markdown-body a {
-  @apply text-blue-400 hover:text-blue-300 underline underline-offset-4 decoration-blue-400/30;
+  @apply text-vtu-accent hover:text-vtu-accent-hover underline underline-offset-4 decoration-vtu-accent/30;
 }
 
 .code-block-header {
-  @apply flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-vtu-border rounded-t-lg text-[10px] font-mono text-slate-400 uppercase tracking-widest;
+  @apply flex items-center justify-between px-4 py-2 bg-vtu-surface border-b border-vtu-border rounded-t-lg text-[10px] font-mono text-vtu-text-dim uppercase tracking-widest;
 }
